@@ -68,24 +68,52 @@
 /* Last error string for the most recent Smtp.Send on this thread. */
 static __thread const char* g_amalgame_smtp_last_error = "";
 
-static inline code_string Amalgame_Net_Smtp_Smtp_LastError(void) {
+static inline code_string Amalgame_Net_Smtp_LastError(void) {
     return (code_string) g_amalgame_smtp_last_error;
 }
 
 #if AMALGAME_SMTP_HAVE_SSL
 
-/* Read one SMTP reply line via SSL and check its 3-digit code begins
- * with `expect` (e.g. '2', '3'). Returns 1 on match, 0 otherwise. */
+/* Read a full SMTP reply (which may span several lines) and check its
+ * status code begins with `expect` (e.g. '2', '3'). Per RFC 5321, a
+ * multi-line reply repeats the 3-digit code with a '-' as the 4th char
+ * on every line except the last, where the 4th char is a space. We read
+ * byte-by-byte, splitting on CRLF, until we see a final line (4th char
+ * not '-'). Returns 1 if that final line's first digit matches `expect`,
+ * 0 otherwise. */
 static inline int amalgame_smtp_expect(SSL* ssl, char expect) {
-    char buf[1024];
-    int n = SSL_read(ssl, buf, (int)sizeof(buf) - 1);
-    if (n <= 0) { g_amalgame_smtp_last_error = "SMTP: connection closed while reading reply"; return 0; }
-    buf[n] = 0;
-    if (buf[0] != expect) {
-        /* Copy the server line into a GC buffer so it survives. */
-        size_t len = strlen(buf);
+    char line[1024];
+    int li = 0;
+    char first = 0;        /* first char of the most recent line */
+    int last_line = 0;     /* set once we read a line whose 4th char != '-' */
+    char full[2048];       /* accumulate for the error message */
+    int fi = 0;
+
+    while (!last_line) {
+        char ch;
+        int n = SSL_read(ssl, &ch, 1);
+        if (n <= 0) {
+            g_amalgame_smtp_last_error = "SMTP: connection closed while reading reply";
+            return 0;
+        }
+        if (fi < (int)sizeof(full) - 1) full[fi++] = ch;
+        if (ch == '\r') continue;
+        if (ch == '\n') {
+            line[li] = 0;
+            if (li > 0) first = line[0];
+            /* 4th char (index 3) decides continuation: '-' = more lines. */
+            if (li < 4 || line[3] != '-') last_line = 1;
+            li = 0;
+            continue;
+        }
+        if (li < (int)sizeof(line) - 1) line[li++] = ch;
+    }
+
+    full[fi] = 0;
+    if (first != expect) {
+        size_t len = strlen(full);
         char* msg = (char*) GC_MALLOC_ATOMIC(len + 32);
-        snprintf(msg, len + 32, "SMTP rejected: %s", buf);
+        snprintf(msg, len + 32, "SMTP rejected: %s", full);
         g_amalgame_smtp_last_error = msg;
         return 0;
     }
@@ -138,7 +166,7 @@ static inline char* amalgame_smtp_b64(const char* in) {
  * (inspect Smtp.LastError()). AUTH LOGIN is used when user is
  * non-empty.
  */
-static inline code_bool Amalgame_Net_Smtp_Smtp_Send(
+static inline code_bool Amalgame_Net_Smtp_Send(
         code_string host, i64 port,
         code_string user, code_string pass,
         code_string from, code_string to,
@@ -225,7 +253,7 @@ cleanup:
 
 #else  /* !AMALGAME_SMTP_HAVE_SSL */
 
-static inline code_bool Amalgame_Net_Smtp_Smtp_Send(
+static inline code_bool Amalgame_Net_Smtp_Send(
         code_string host, i64 port,
         code_string user, code_string pass,
         code_string from, code_string to,
