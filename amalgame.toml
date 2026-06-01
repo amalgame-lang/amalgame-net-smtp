@@ -1,7 +1,7 @@
 
 [package]
 name = "amalgame-net-smtp"
-version = "0.1.1"
+version = "0.1.2"
 license = "Apache-2.0"
 description = "Minimal SMTP client — send transactional mail over implicit TLS (port 465). Header-only binding on OpenSSL."
 required-amalgame = ">=0.8.58"
