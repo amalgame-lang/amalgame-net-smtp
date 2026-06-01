@@ -74,6 +74,41 @@ static inline code_string Amalgame_Net_Smtp_LastError(void) {
     return (code_string) g_amalgame_smtp_last_error;
 }
 
+/*
+ * Smtp.RfcDate — current date as an RFC 5322 header value, e.g.
+ * "Tue, 01 Jun 2026 15:30:00 +0000". For AM builders assembling their
+ * own message (mail.am). Always available (no OpenSSL needed).
+ *
+ * AM: public static string RfcDate()
+ */
+static inline code_string Amalgame_Net_Smtp_RfcDate(void) {
+    char* buf = (char*) GC_MALLOC_ATOMIC(64);
+    time_t t = time(NULL);
+    struct tm gmt;
+    gmtime_r(&t, &gmt);
+    static const char* days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    static const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                    "Jul","Aug","Sep","Oct","Nov","Dec"};
+    snprintf(buf, 64, "%s, %02d %s %04d %02d:%02d:%02d +0000",
+             days[gmt.tm_wday], gmt.tm_mday, months[gmt.tm_mon],
+             gmt.tm_year + 1900, gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
+    return (code_string) buf;
+}
+
+/*
+ * Smtp.NewMessageId — a unique Message-ID value "<epoch.pid@domain>"
+ * for AM builders. Pass the sender's domain (e.g. "example.com").
+ *
+ * AM: public static string NewMessageId(string domain)
+ */
+static inline code_string Amalgame_Net_Smtp_NewMessageId(code_string domain) {
+    char* buf = (char*) GC_MALLOC_ATOMIC(400);
+    snprintf(buf, 400, "<%lld.%d@%s>",
+             (long long) time(NULL), (int) getpid(),
+             (domain && *domain) ? domain : "localhost");
+    return (code_string) buf;
+}
+
 #if AMALGAME_SMTP_HAVE_SSL
 
 /* Read a full SMTP reply (which may span several lines) and check its
@@ -188,24 +223,83 @@ static inline char* amalgame_smtp_b64(const char* in) {
     return out;
 }
 
+/* Read a whole file into a GC buffer (binary-safe). Sets *out_len.
+ * Returns NULL on error. */
+static inline unsigned char* amalgame_smtp_read_file(const char* path, size_t* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    unsigned char* buf = (unsigned char*) GC_MALLOC_ATOMIC((size_t)sz + 1);
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    buf[got] = 0;
+    *out_len = got;
+    return buf;
+}
+
+/* Base64 raw bytes (no line wrapping). Returns a GC string. */
+static inline char* amalgame_smtp_b64_bytes(const unsigned char* in, size_t ilen) {
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t olen = 4 * ((ilen + 2) / 3);
+    char* out = (char*) GC_MALLOC_ATOMIC(olen + 1);
+    size_t i, j;
+    for (i = 0, j = 0; i < ilen;) {
+        unsigned a = i < ilen ? in[i++] : 0;
+        unsigned b = i < ilen ? in[i++] : 0;
+        unsigned c = i < ilen ? in[i++] : 0;
+        unsigned tri = (a << 16) | (b << 8) | c;
+        out[j++] = tbl[(tri >> 18) & 0x3F];
+        out[j++] = tbl[(tri >> 12) & 0x3F];
+        out[j++] = tbl[(tri >> 6) & 0x3F];
+        out[j++] = tbl[tri & 0x3F];
+    }
+    size_t mod = ilen % 3;
+    if (mod >= 1) out[olen - 1] = '=';
+    if (mod == 1) out[olen - 2] = '=';
+    out[olen] = 0;
+    return out;
+}
+
 /*
- * Smtp.Send — send one message over implicit TLS (port 465).
+ * Smtp.FileBase64 — read a file and return its base64-encoded contents
+ * (no line wrapping), for building MIME attachments from AM. Empty
+ * string on error (missing/unreadable file).
  *
- * AM signature:
- *   public static bool Send(string host, int port,
- *                           string user, string pass,
- *                           string from, string to,
- *                           string subject, string body)
- *
- * Returns true on a 250 after the data phase, false otherwise
- * (inspect Smtp.LastError()). AUTH LOGIN is used when user is
- * non-empty.
+ * AM: public static string FileBase64(string path)
  */
-static inline code_bool Amalgame_Net_Smtp_Send(
+static inline code_string Amalgame_Net_Smtp_FileBase64(code_string path) {
+    size_t len = 0;
+    unsigned char* data = amalgame_smtp_read_file(path ? path : "", &len);
+    if (!data) {
+        g_amalgame_smtp_last_error = "SMTP: cannot read attachment file";
+        return (code_string) "";
+    }
+    return (code_string) amalgame_smtp_b64_bytes(data, len);
+}
+
+/*
+ * Smtp.SendRaw — transport core. Runs the full implicit-TLS SMTP
+ * conversation (connect, TLS, EHLO, AUTH LOGIN, MAIL FROM, RCPT TO,
+ * DATA) and writes `data` verbatim as the DATA payload. The caller is
+ * responsible for `data` being a complete RFC 5322 message (headers +
+ * blank line + body), CRLF line endings, and dot-stuffing if needed.
+ * SendRaw appends the terminating CRLF "." itself.
+ *
+ * This is what the Mail builder (mail.am) targets. Smtp.Send below is a
+ * convenience wrapper that assembles a plain-text message and calls it.
+ *
+ * AM: public static bool SendRaw(string host, int port, string user,
+ *                                string pass, string from, string to,
+ *                                string data)
+ */
+static inline code_bool Amalgame_Net_Smtp_SendRaw(
         code_string host, i64 port,
         code_string user, code_string pass,
         code_string from, code_string to,
-        code_string subject, code_string body) {
+        code_string data) {
 
     g_amalgame_smtp_last_error = "";
     if (!host || !*host) { g_amalgame_smtp_last_error = "SMTP: empty host"; return 0; }
@@ -214,8 +308,7 @@ static inline code_bool Amalgame_Net_Smtp_Send(
     SSL_CTX* ctx = NULL;
     SSL* ssl = NULL;
     code_bool ok = 0;
-    /* Declared before any `goto cleanup` so no jump skips its init. */
-    char* domain = amalgame_smtp_domain_of(from);   /* for EHLO + Message-ID */
+    char* domain = amalgame_smtp_domain_of(from);   /* for EHLO */
 
     /* Resolve + connect TCP. */
     char portstr[16];
@@ -262,7 +355,6 @@ static inline code_bool Amalgame_Net_Smtp_Send(
     }
 
     {
-        /* MAIL FROM / RCPT TO use the bare addresses. */
         char line[1024];
         snprintf(line, sizeof(line), "MAIL FROM:<%s>", from ? from : "");
         if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
@@ -270,26 +362,9 @@ static inline code_bool Amalgame_Net_Smtp_Send(
         if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
         if (!amalgame_smtp_cmd(ssl, "DATA", '3')) goto cleanup;
 
-        /* Headers + body, terminated by a lone ".".
-         * Date and Message-ID are mandatory in practice — a message
-         * missing either scores heavily as spam. Message-ID is
-         * <epoch.pid@domain>, unique enough for transactional mail. */
-        char* date = amalgame_smtp_date_now();
-        char msgid[400];
-        snprintf(msgid, sizeof(msgid), "<%lld.%d@%s>",
-                 (long long) time(NULL), (int) getpid(), domain);
-        char* hdr = (char*) GC_MALLOC_ATOMIC(
-            (from?strlen(from):0) + (to?strlen(to):0) +
-            (subject?strlen(subject):0) + (body?strlen(body):0) +
-            strlen(date) + strlen(msgid) + 256);
-        sprintf(hdr,
-            "Date: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\n"
-            "Message-ID: %s\r\n"
-            "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n"
-            "Content-Transfer-Encoding: 8bit\r\n\r\n%s",
-            date, from?from:"", to?to:"", subject?subject:"", msgid,
-            body?body:"");
-        SSL_write(ssl, hdr, (int)strlen(hdr));
+        /* Caller-assembled message, then the terminating CRLF "." */
+        const char* d = data ? data : "";
+        SSL_write(ssl, d, (int)strlen(d));
         if (!amalgame_smtp_cmd(ssl, "\r\n.", '2')) goto cleanup;
         amalgame_smtp_cmd(ssl, "QUIT", '2');                    /* best-effort */
     }
@@ -303,17 +378,64 @@ cleanup:
     return ok;
 }
 
-#else  /* !AMALGAME_SMTP_HAVE_SSL */
-
+/*
+ * Smtp.Send — convenience wrapper: assemble a plain-text message
+ * (Date + From/To/Subject + Message-ID, text/plain UTF-8) and send it
+ * via SendRaw. Unchanged signature from v0.1 (backwards compatible).
+ *
+ * AM: public static bool Send(string host, int port, string user,
+ *                             string pass, string from, string to,
+ *                             string subject, string body)
+ */
 static inline code_bool Amalgame_Net_Smtp_Send(
         code_string host, i64 port,
         code_string user, code_string pass,
         code_string from, code_string to,
         code_string subject, code_string body) {
+
+    char* domain = amalgame_smtp_domain_of(from);
+    char* date = amalgame_smtp_date_now();
+    char msgid[400];
+    snprintf(msgid, sizeof(msgid), "<%lld.%d@%s>",
+             (long long) time(NULL), (int) getpid(), domain);
+    char* hdr = (char*) GC_MALLOC_ATOMIC(
+        (from?strlen(from):0) + (to?strlen(to):0) +
+        (subject?strlen(subject):0) + (body?strlen(body):0) +
+        strlen(date) + strlen(msgid) + 256);
+    sprintf(hdr,
+        "Date: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\n"
+        "Message-ID: %s\r\n"
+        "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n"
+        "Content-Transfer-Encoding: 8bit\r\n\r\n%s",
+        date, from?from:"", to?to:"", subject?subject:"", msgid,
+        body?body:"");
+    return Amalgame_Net_Smtp_SendRaw(host, port, user, pass, from, to,
+                                     (code_string) hdr);
+}
+
+#else  /* !AMALGAME_SMTP_HAVE_SSL */
+
+static inline code_bool Amalgame_Net_Smtp_SendRaw(
+        code_string host, i64 port, code_string user, code_string pass,
+        code_string from, code_string to, code_string data) {
+    (void)host;(void)port;(void)user;(void)pass;(void)from;(void)to;(void)data;
+    g_amalgame_smtp_last_error =
+        "SMTP: built without OpenSSL — install libssl-dev and rebuild";
+    return 0;
+}
+static inline code_bool Amalgame_Net_Smtp_Send(
+        code_string host, i64 port, code_string user, code_string pass,
+        code_string from, code_string to, code_string subject, code_string body) {
     (void)host;(void)port;(void)user;(void)pass;(void)from;(void)to;(void)subject;(void)body;
     g_amalgame_smtp_last_error =
         "SMTP: built without OpenSSL — install libssl-dev and rebuild";
     return 0;
+}
+static inline code_string Amalgame_Net_Smtp_FileBase64(code_string path) {
+    (void)path;
+    g_amalgame_smtp_last_error =
+        "SMTP: built without OpenSSL — install libssl-dev and rebuild";
+    return (code_string) "";
 }
 
 #endif /* AMALGAME_SMTP_HAVE_SSL */
