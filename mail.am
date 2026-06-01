@@ -27,6 +27,13 @@ namespace Amalgame.Net.Smtp
 import Amalgame.Collections
 import Amalgame.String
 
+// Force l'inclusion du header runtime dans le .c de cette façade, sinon
+// les appels @c à Amalgame_Net_Smtp_{SendRaw,LastError,…} (fonctions
+// static inline du header) sont des références externes non résolues
+// (le .c de façade précompilé n'inclut pas automatiquement le header du
+// package). Sans ça : "undefined reference" au link d'un consumer.
+@c_include "Amalgame_Net_Smtp.h"
+
 public class Mail {
     public FromAddr:  string
     public ToAddr:    string
