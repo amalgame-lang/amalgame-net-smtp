@@ -37,24 +37,32 @@ import Amalgame.String
 public class Mail {
     public FromAddr:  string
     public ToAddr:    string
+    public ReplyAddr: string
     public Subj:      string
     public TextBody:  string
     public HtmlBody:  string
     public Files:     List<string>
 
     public Mail() {
-        this.FromAddr = ""
-        this.ToAddr   = ""
-        this.Subj     = ""
-        this.TextBody = ""
-        this.HtmlBody = ""
-        this.Files    = new List<string>()
+        this.FromAddr  = ""
+        this.ToAddr    = ""
+        this.ReplyAddr = ""
+        this.Subj      = ""
+        this.TextBody  = ""
+        this.HtmlBody  = ""
+        this.Files     = new List<string>()
     }
 
     public static Mail New() { return new Mail() }
 
     public Mail From(string addr)    { this.FromAddr = addr; return this }
     public Mail To(string addr)      { this.ToAddr   = addr; return this }
+    // Reply-To: where replies should go (e.g. a contact form's visitor
+    // address). From must stay the authenticated account so SPF/DKIM
+    // pass; Reply-To lets "Reply" reach the real sender. Pass a bare
+    // addr-spec ("user@host") — no display-name (encoded-words aren't
+    // allowed inside an address).
+    public Mail ReplyTo(string addr) { this.ReplyAddr = addr; return this }
     public Mail Subject(string s)    { this.Subj     = s;    return this }
     public Mail Text(string body)    { this.TextBody = body; return this }
     public Mail Html(string body)    { this.HtmlBody = body; return this }
@@ -69,6 +77,9 @@ public class Mail {
         var msg: string = "Date: " + Mail.rfcDate() + crlf
         msg = msg + "From: " + this.FromAddr + crlf
         msg = msg + "To: " + this.ToAddr + crlf
+        if (String_Length(this.ReplyAddr) > 0) {
+            msg = msg + "Reply-To: " + this.ReplyAddr + crlf
+        }
         msg = msg + "Subject: " + Mail.encodeHeader(this.Subj) + crlf
         msg = msg + "Message-ID: " + Mail.newMessageId(domain) + crlf
         msg = msg + "MIME-Version: 1.0" + crlf
