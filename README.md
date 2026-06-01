@@ -5,8 +5,13 @@ forms, notifications) over **implicit TLS** (SMTPS, port 465).
 
 Part of the `Amalgame.Net.*` protocol family (alongside
 [`amalgame-net-http`](https://github.com/amalgame-lang/amalgame-net-http)).
-v0.1 is outbound-send only; the broader mail slice (SMTP server/relay,
-IMAP, POP3) is roadmap — see the ecosystem's `beyond-http.md`.
+Outbound-send only; the broader mail slice (SMTP server/relay, IMAP,
+POP3) is roadmap — see the ecosystem's `beyond-http.md`.
+
+Two APIs:
+- **`Smtp.Send(...)`** — one call, plain-text body (the simplest case).
+- **`Mail.New()....Send(...)`** — a fluent builder for HTML bodies,
+  text+HTML alternatives, and file attachments (v0.2).
 
 ## Install
 
@@ -55,20 +60,70 @@ public class Program {
 
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `Smtp.Send(host, port, user, pass, from, to, subject, body)` | `bool` | `true` on a 250 after the data phase. `user=""` skips AUTH. Uses `AUTH LOGIN`. |
-| `Smtp.LastError()` | `string` | Human-readable reason for the last `Send` that returned `false` (per-thread). |
+| `Smtp.Send(host, port, user, pass, from, to, subject, body)` | `bool` | `true` on a 250 after the data phase. `user=""` skips AUTH. Uses `AUTH LOGIN`. Adds `Date` + `Message-ID` automatically. |
+| `Smtp.LastError()` | `string` | Human-readable reason for the last send that returned `false` (per-thread). |
 
-## Scope & limits (v0.1)
+## HTML & attachments — the `Mail` builder (v0.2)
+
+For HTML mail, text+HTML alternatives, or file attachments, use the
+fluent `Mail` builder. It assembles the MIME message (and the
+`Date`/`Message-ID`/`MIME-Version` headers) for you, then sends via the
+same transport core.
+
+```amalgame
+import Amalgame.Net.Smtp
+
+public class Program {
+    public static void Main(string[] args) {
+        let ok: bool = Mail.New()
+            .From("contact@example.com")
+            .To("client@example.com")
+            .Subject("Votre facture")
+            .Text("Version texte de secours.")            // optional
+            .Html("<h1>Merci</h1><p>Facture en pièce jointe.</p>")
+            .Attach("/path/to/invoice.pdf")               // 0..N attachments
+            .Send("ssl0.ovh.net", 465, "user", "pass")
+
+        if (!ok) { Console.WriteLine(Mail.LastError()) }
+    }
+}
+```
+
+The MIME shape is chosen automatically:
+
+| Bodies set | Result |
+|------------|--------|
+| `.Text()` only | `text/plain` |
+| `.Html()` only | `text/html` |
+| both | `multipart/alternative` |
+| any + `.Attach()` | `multipart/mixed` wrapping the above |
+
+| Builder method | Notes |
+|----------------|-------|
+| `Mail.New()` | start a message |
+| `.From(addr)` `.To(addr)` `.Subject(s)` | required envelope/headers |
+| `.Text(body)` `.Html(body)` | set either or both |
+| `.Attach(path)` | add a file (base64, `application/octet-stream`); call repeatedly |
+| `.Send(host, port, user, pass)` | returns `bool`; `Mail.LastError()` on failure |
+
+## Scope & limits
 
 - **Implicit TLS only** (port 465). Plaintext and STARTTLS (port 587)
   are not implemented yet.
-- **One recipient** per call, **text/plain** body. No attachments, no
-  multipart, no CC/BCC headers yet.
+- **One recipient** per message (no CC/BCC yet).
 - **`AUTH LOGIN`** only (base64 user/pass). No OAUTH2/XOAUTH2.
+- Attachments are read fully into memory + base64 (fine for typical
+  document sizes; not meant for very large files).
 - Outbound only — no server/relay, no IMAP/POP3.
 
-These cover the transactional case (contact form → one mailbox). Wider
-support is roadmap.
+These cover the transactional case (contact form, notification,
+invoice). Wider support is roadmap.
+
+### Deliverability
+
+Headers alone don't keep mail out of spam — the sending **domain** needs
+**SPF + DKIM + DMARC** DNS records (DKIM especially, for Gmail/Outlook).
+That's DNS config on your domain/provider, outside this package.
 
 ## Testing
 
