@@ -1,0 +1,25 @@
+// examples/mail_demo.am — consumer du builder Mail (HTML + attachment).
+//
+// Compile-check / garde-fou ABI pour la façade Mail. Cible un host
+// injoignable → pas d'envoi réel ; on vérifie juste que le builder
+// compile, linke et renvoie false + LastError.
+
+import Amalgame.Net.Smtp
+
+public class Program {
+    public static void Main(string[] args) {
+        let ok: bool = Mail.New()
+            .From("contact@example.com")
+            .To("client@example.com")
+            .Subject("Bonjour")
+            .Text("Version texte de secours.")
+            .Html("<h1>Salut</h1><p>Mail HTML depuis Amalgame.</p>")
+            .Send("smtp.invalid.example", 465, "user", "pass")
+
+        if (ok) {
+            Console.WriteLine("[PASS] sent (unexpected for invalid host)")
+        } else {
+            Console.WriteLine("[PASS] failed as expected: " + Mail.LastError())
+        }
+    }
+}

@@ -1,0 +1,193 @@
+// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2).
+//
+// Assembles a full RFC 5322 / MIME message (plain text and/or HTML,
+// optional file attachments) and sends it via the transport core
+// Smtp.SendRaw (runtime header). The header hygiene that keeps mail out
+// of spam (Date, Message-ID, MIME-Version) is added automatically.
+//
+// Usage:
+//   import Amalgame.Net.Smtp
+//   let ok: bool = Mail.New()
+//       .From("contact@example.com")
+//       .To("client@example.com")
+//       .Subject("Bonjour")
+//       .Html("<h1>Salut</h1><p>…</p>")        // and/or .Text("…")
+//       .Attach("/path/to/invoice.pdf")        // 0..N attachments
+//       .Send("ssl0.ovh.net", 465, "user", "pass")
+//   if (!ok) { Console.WriteLine(Mail.LastError()) }
+//
+// MIME shape chosen automatically:
+//   - text only  → text/plain
+//   - html only  → text/html
+//   - text+html  → multipart/alternative
+//   - + attach   → multipart/mixed wrapping the above
+
+namespace Amalgame.Net.Smtp
+
+import Amalgame.Collections
+import Amalgame.String
+
+public class Mail {
+    public FromAddr:  string
+    public ToAddr:    string
+    public Subj:      string
+    public TextBody:  string
+    public HtmlBody:  string
+    public Files:     List<string>
+
+    public Mail() {
+        this.FromAddr = ""
+        this.ToAddr   = ""
+        this.Subj     = ""
+        this.TextBody = ""
+        this.HtmlBody = ""
+        this.Files    = new List<string>()
+    }
+
+    public static Mail New() { return new Mail() }
+
+    public Mail From(string addr)    { this.FromAddr = addr; return this }
+    public Mail To(string addr)      { this.ToAddr   = addr; return this }
+    public Mail Subject(string s)    { this.Subj     = s;    return this }
+    public Mail Text(string body)    { this.TextBody = body; return this }
+    public Mail Html(string body)    { this.HtmlBody = body; return this }
+    public Mail Attach(string path)  { this.Files.Add(path); return this }
+
+    // Build the MIME message (headers + body) and hand it to SendRaw.
+    public bool Send(string host, int port, string user, string pass) {
+        let domain: string = this.domainOf(this.FromAddr)
+        let crlf:   string = "\r\n"
+
+        // Common top headers.
+        var msg: string = "Date: " + Mail.rfcDate() + crlf
+        msg = msg + "From: " + this.FromAddr + crlf
+        msg = msg + "To: " + this.ToAddr + crlf
+        msg = msg + "Subject: " + this.Subj + crlf
+        msg = msg + "Message-ID: " + Mail.newMessageId(domain) + crlf
+        msg = msg + "MIME-Version: 1.0" + crlf
+
+        let hasText: bool = String_Length(this.TextBody) > 0
+        let hasHtml: bool = String_Length(this.HtmlBody) > 0
+        let nFiles:  int  = this.Files.Count()
+
+        // The "content" part (text/html/alternative), before attachments.
+        let bodyPart: string = this.buildBodyPart(hasText, hasHtml, crlf)
+
+        if (nFiles == 0) {
+            // No attachments: the body part's headers go straight in the
+            // top-level message (bodyPart already starts with its own
+            // Content-Type when single, or a multipart header when alt).
+            msg = msg + bodyPart
+            return Mail.sendRaw(host, port, user, pass,
+                                this.FromAddr, this.ToAddr, msg)
+        }
+
+        // With attachments: wrap everything in multipart/mixed.
+        let mixed: string = "MIXED_amalgame_boundary_7c3a1"
+        msg = msg + "Content-Type: multipart/mixed; boundary=\"" + mixed + "\"" + crlf + crlf
+        msg = msg + "This is a multipart message in MIME format." + crlf + crlf
+
+        // Part 1: the body (text/html/alternative).
+        msg = msg + "--" + mixed + crlf
+        msg = msg + bodyPart + crlf
+
+        // Parts 2..N: each attachment, base64.
+        var i = 0
+        while (i < nFiles) {
+            let path: string = this.Files.Get(i)
+            let b64:  string = Mail.fileBase64(path)
+            let name: string = this.baseName(path)
+            msg = msg + "--" + mixed + crlf
+            msg = msg + "Content-Type: application/octet-stream; name=\"" + name + "\"" + crlf
+            msg = msg + "Content-Transfer-Encoding: base64" + crlf
+            msg = msg + "Content-Disposition: attachment; filename=\"" + name + "\"" + crlf + crlf
+            msg = msg + b64 + crlf
+            i = i + 1
+        }
+        msg = msg + "--" + mixed + "--" + crlf
+
+        return Mail.sendRaw(host, port, user, pass,
+                            this.FromAddr, this.ToAddr, msg)
+    }
+
+    public static string LastError() {
+        var e: string = ""
+        @c { e = (code_string) Amalgame_Net_Smtp_LastError(); }
+        return e
+    }
+
+    // ── runtime bridges ──
+    // The Smtp class is header-only (defined in the runtime C header, not
+    // in AM), so a same-package facade can't call it via `Smtp.X()` —
+    // amc doesn't declare the package's own header class while compiling
+    // the package's facade. We call the C symbols directly via @c, the
+    // same way amalgame-net-http's facade reaches H1Conn.
+    private static string rfcDate() {
+        var r: string = ""
+        @c { r = (code_string) Amalgame_Net_Smtp_RfcDate(); }
+        return r
+    }
+    private static string newMessageId(string domain) {
+        var r: string = ""
+        @c { r = (code_string) Amalgame_Net_Smtp_NewMessageId(domain); }
+        return r
+    }
+    private static string fileBase64(string path) {
+        var r: string = ""
+        @c { r = (code_string) Amalgame_Net_Smtp_FileBase64(path); }
+        return r
+    }
+    private static bool sendRaw(string host, int port, string user, string pass,
+                                string from, string to, string data) {
+        var ok: bool = false
+        @c { ok = Amalgame_Net_Smtp_SendRaw(host, port, user, pass, from, to, data); }
+        return ok
+    }
+
+    // ── helpers ──
+
+    // The content part: a single text/plain or text/html, or a
+    // multipart/alternative when both are present. Returns headers +
+    // blank line + body (no trailing boundary — the caller wraps).
+    private string buildBodyPart(bool hasText, bool hasHtml, string crlf) {
+        if (hasText && hasHtml) {
+            let alt: string = "ALT_amalgame_boundary_4f8d2"
+            var p: string = "Content-Type: multipart/alternative; boundary=\"" + alt + "\"" + crlf + crlf
+            p = p + "--" + alt + crlf
+            p = p + "Content-Type: text/plain; charset=UTF-8" + crlf
+            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+            p = p + this.TextBody + crlf + crlf
+            p = p + "--" + alt + crlf
+            p = p + "Content-Type: text/html; charset=UTF-8" + crlf
+            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+            p = p + this.HtmlBody + crlf + crlf
+            p = p + "--" + alt + "--" + crlf
+            return p
+        }
+        if (hasHtml) {
+            var p: string = "Content-Type: text/html; charset=UTF-8" + crlf
+            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+            p = p + this.HtmlBody
+            return p
+        }
+        // Default: plain text (also covers the empty-body case).
+        var p: string = "Content-Type: text/plain; charset=UTF-8" + crlf
+        p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+        p = p + this.TextBody
+        return p
+    }
+
+    // Domain part of an email address ("a@b.com" → "b.com").
+    private string domainOf(string addr) {
+        let at: int = String_IndexOf(addr, "@")
+        if (at < 0) { return "localhost" }
+        return String_Substring(addr, at + 1, String_Length(addr) - at - 1)
+    }
+
+    // Last path segment ("/a/b/c.pdf" → "c.pdf").
+    private string baseName(string path) {
+        let slash: int = String_LastIndexOf(path, "/")
+        if (slash < 0) { return path }
+        return String_Substring(path, slash + 1, String_Length(path) - slash - 1)
+    }
+}

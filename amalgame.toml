@@ -1,28 +1,34 @@
+# amalgame-net-smtp — SMTP client (transactional mail).
+#
+# v0.2: outbound send over implicit TLS (SMTPS, port 465). Plain Smtp
+# helpers (runtime header) + a fluent Mail builder (facade, mail.am) for
+# HTML bodies and file attachments. Part of the Amalgame.Net.* family
+# (cf. amalgame-net-http). SMTP server/relay + IMAP/POP3 are roadmap —
+# see beyond-http.md.
 
 [package]
-name = "amalgame-net-smtp"
-version = "0.1.2"
-license = "Apache-2.0"
-description = "Minimal SMTP client — send transactional mail over implicit TLS (port 465). Header-only binding on OpenSSL."
+name              = "amalgame-net-smtp"
+version           = "0.2.0"
+license           = "Apache-2.0"
+description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (port 465). OpenSSL transport + a fluent Mail builder."
 required-amalgame = ">=0.8.58"
-schema-version = 1
+schema-version    = 1
 
 [stdlib]
-class = "Smtp"
-header = "runtime/Amalgame_Net_Smtp.h"
+# Two classes: Smtp (runtime header — transport + helpers) and Mail
+# (pure-AM facade builder, mail.am, assembling MIME on top of SendRaw).
+classes   = ["Smtp", "Mail"]
+header    = "runtime/Amalgame_Net_Smtp.h"
 namespace = "Amalgame.Net.Smtp"
-libs = ["ssl", "crypto"]
+facade    = "mail.am"
+# -lssl -lcrypto appended to the final link line (OpenSSL 3.x / LibreSSL).
+libs      = ["ssl", "crypto"]
 
 [stdlib.functions]
-
-[stdlib.functions.Smtp_Send]
-returns = "code_bool"
-
-[stdlib.functions.Smtp_LastError]
-returns = "code_string"
-
-[dependencies]
-
-[dependencies.smtp]
-git = "github.com/amalgame-lang/amalgame-net-smtp"
-tag = "v0.1.0"
+# Return types match amc's lowering (bool→code_bool, string→code_string).
+Smtp_Send         = { returns = "code_bool" }
+Smtp_SendRaw      = { returns = "code_bool" }
+Smtp_FileBase64   = { returns = "code_string" }
+Smtp_RfcDate      = { returns = "code_string" }
+Smtp_NewMessageId = { returns = "code_string" }
+Smtp_LastError    = { returns = "code_string" }
