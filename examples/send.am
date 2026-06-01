@@ -1,0 +1,33 @@
+// examples/send.am — consumer de référence pour amalgame-net-smtp.
+//
+// Sert deux buts :
+//   1. exemple d'usage minimal de Smtp.Send ;
+//   2. garde-fou ABI — c'est la seule TU qui réunit le header runtime
+//      ET l'émission amc, donc le seul build qui attrape un mismatch
+//      de type (cf. la classe de bug "conflicting types").
+//
+// Build (depuis la racine du package) :
+//   amc examples/send.am -o /tmp/smtp-send \
+//       --lib-header runtime/Amalgame_Net_Smtp.h   # ou via le cache packages
+//   (en pratique : compilé par tests/run_tests.sh avec le bon -I + -lssl -lcrypto)
+
+import Amalgame.Net.Smtp
+
+public class Program {
+    public static void Main(string[] args) {
+        // On NE veut pas envoyer un vrai mail au build/test : on cible
+        // un host volontairement injoignable et on vérifie juste que
+        // l'appel compile/linke et renvoie false + une LastError.
+        let ok: bool = Smtp.Send(
+            "smtp.invalid.example", 465,
+            "user", "pass",
+            "from@example.com", "to@example.com",
+            "Test", "Hello from Amalgame SMTP")
+
+        if (ok) {
+            Console.WriteLine("[PASS] send returned true (unexpected for invalid host)")
+        } else {
+            Console.WriteLine("[PASS] send failed as expected: " + Smtp.LastError())
+        }
+    }
+}
