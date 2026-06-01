@@ -281,6 +281,69 @@ static inline code_string Amalgame_Net_Smtp_FileBase64(code_string path) {
 }
 
 /*
+ * Smtp.EncodeHeader — RFC 2047 MIME "encoded-word" for header values
+ * that contain non-ASCII bytes (accents in a Subject, a sender name…).
+ * Mail headers are 7-bit ASCII; a raw UTF-8 byte gets shown as "?" by
+ * the client. We B-encode such values as one or more
+ * "=?UTF-8?B?<base64>?=" words, folded with CRLF+SPACE so no encoded
+ * line exceeds the RFC 2047 75-char ceiling. Each chunk ends on a UTF-8
+ * character boundary (never mid multi-byte sequence). Pure-ASCII input
+ * is returned unchanged (no needless encoding).
+ *
+ * AM: public static string EncodeHeader(string s)
+ */
+static inline code_string Amalgame_Net_Smtp_EncodeHeader(code_string s) {
+    const char* in = s ? s : "";
+    size_t n = strlen(in);
+    /* Fast path: all printable ASCII → leave as-is. */
+    int needs = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char) in[i];
+        if (c >= 0x80 || c < 0x20) { needs = 1; break; }
+    }
+    if (!needs) return s ? s : (code_string) "";
+
+    /* Encode in chunks of ≤ 45 input bytes (→ ≤ 60 base64 chars; with the
+     * "=?UTF-8?B?" + "?=" wrapper that is ≤ 72, under the 75 ceiling),
+     * backing each chunk off to the last UTF-8 boundary. */
+    const char* prefix = "=?UTF-8?B?";
+    const char* suffix = "?=";
+    const char* fold   = "\r\n ";
+    /* Worst-case output size estimate: each 45-byte block → ~72 chars +
+     * 3-char fold; be generous. */
+    size_t blocks = n / 45 + 2;
+    size_t cap = blocks * 80 + 1;
+    char* out = (char*) GC_MALLOC_ATOMIC(cap);
+    size_t oj = 0;
+    size_t pos = 0;
+    int first = 1;
+    while (pos < n) {
+        size_t take = n - pos;
+        if (take > 45) {
+            take = 45;
+            /* Don't split a UTF-8 multi-byte sequence: walk back while the
+             * next byte is a continuation byte (0x80..0xBF). */
+            while (take > 0 &&
+                   ((unsigned char) in[pos + take] & 0xC0) == 0x80) {
+                take--;
+            }
+            if (take == 0) take = 45;   /* pathological: emit raw rather than loop */
+        }
+        char* b64 = amalgame_smtp_b64_bytes((const unsigned char*) (in + pos), take);
+        if (!first) {
+            for (const char* p = fold; *p; p++) out[oj++] = *p;
+        }
+        for (const char* p = prefix; *p; p++) out[oj++] = *p;
+        for (char* p = b64; *p; p++) out[oj++] = *p;
+        for (const char* p = suffix; *p; p++) out[oj++] = *p;
+        first = 0;
+        pos += take;
+    }
+    out[oj] = 0;
+    return (code_string) out;
+}
+
+/*
  * Smtp.SendRaw — transport core. Runs the full implicit-TLS SMTP
  * conversation (connect, TLS, EHLO, AUTH LOGIN, MAIL FROM, RCPT TO,
  * DATA) and writes `data` verbatim as the DATA payload. The caller is
