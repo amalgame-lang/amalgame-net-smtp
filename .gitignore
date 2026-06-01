@@ -1,0 +1,8 @@
+# Build artifacts
+/build/
+*.o
+*.c.o
+/tmp/
+*.swp
+*~
+.DS_Store
