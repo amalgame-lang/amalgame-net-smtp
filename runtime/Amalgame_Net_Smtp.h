@@ -40,6 +40,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <time.h>
+#include <sys/types.h>
 
 /* ── OpenSSL detection (multi-OS, mirrors amalgame-tls) ───────────── */
 #if defined(__has_include)
@@ -129,6 +131,39 @@ static inline int amalgame_smtp_cmd(SSL* ssl, const char* line, char expect) {
     return amalgame_smtp_expect(ssl, expect);
 }
 
+/* Extract the domain part of an email address ("a@b.com" → "b.com").
+ * Returns a GC string; falls back to "localhost" if there's no '@'. */
+static inline char* amalgame_smtp_domain_of(const char* addr) {
+    const char* at = addr ? strchr(addr, '@') : NULL;
+    if (!at || !at[1]) {
+        char* d = (char*) GC_MALLOC_ATOMIC(10);
+        strcpy(d, "localhost");
+        return d;
+    }
+    const char* dom = at + 1;
+    size_t len = strlen(dom);
+    char* d = (char*) GC_MALLOC_ATOMIC(len + 1);
+    memcpy(d, dom, len + 1);
+    return d;
+}
+
+/* RFC 5322 Date header value, e.g. "Tue, 01 Jun 2026 15:30:00 +0000".
+ * Uses GMT/+0000 to avoid locale/timezone surprises. */
+static inline char* amalgame_smtp_date_now(void) {
+    char* buf = (char*) GC_MALLOC_ATOMIC(64);
+    time_t t = time(NULL);
+    struct tm gmt;
+    gmtime_r(&t, &gmt);
+    /* Force C-locale day/month names regardless of the process locale. */
+    static const char* days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
+    static const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                    "Jul","Aug","Sep","Oct","Nov","Dec"};
+    snprintf(buf, 64, "%s, %02d %s %04d %02d:%02d:%02d +0000",
+             days[gmt.tm_wday], gmt.tm_mday, months[gmt.tm_mon],
+             gmt.tm_year + 1900, gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
+    return buf;
+}
+
 /* Base64-encode (for AUTH LOGIN). Returns a GC string. */
 static inline char* amalgame_smtp_b64(const char* in) {
     static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -179,6 +214,8 @@ static inline code_bool Amalgame_Net_Smtp_Send(
     SSL_CTX* ctx = NULL;
     SSL* ssl = NULL;
     code_bool ok = 0;
+    /* Declared before any `goto cleanup` so no jump skips its init. */
+    char* domain = amalgame_smtp_domain_of(from);   /* for EHLO + Message-ID */
 
     /* Resolve + connect TCP. */
     char portstr[16];
@@ -212,7 +249,11 @@ static inline code_bool Amalgame_Net_Smtp_Send(
 
     /* SMTP conversation. */
     if (!amalgame_smtp_expect(ssl, '2')) goto cleanup;          /* server greeting */
-    if (!amalgame_smtp_cmd(ssl, "EHLO amalgame", '2')) goto cleanup;
+    {
+        char ehlo[300];
+        snprintf(ehlo, sizeof(ehlo), "EHLO %s", domain);
+        if (!amalgame_smtp_cmd(ssl, ehlo, '2')) goto cleanup;
+    }
 
     if (user && *user) {
         if (!amalgame_smtp_cmd(ssl, "AUTH LOGIN", '3')) goto cleanup;
@@ -229,14 +270,25 @@ static inline code_bool Amalgame_Net_Smtp_Send(
         if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
         if (!amalgame_smtp_cmd(ssl, "DATA", '3')) goto cleanup;
 
-        /* Headers + body, terminated by a lone ".". */
+        /* Headers + body, terminated by a lone ".".
+         * Date and Message-ID are mandatory in practice — a message
+         * missing either scores heavily as spam. Message-ID is
+         * <epoch.pid@domain>, unique enough for transactional mail. */
+        char* date = amalgame_smtp_date_now();
+        char msgid[400];
+        snprintf(msgid, sizeof(msgid), "<%lld.%d@%s>",
+                 (long long) time(NULL), (int) getpid(), domain);
         char* hdr = (char*) GC_MALLOC_ATOMIC(
             (from?strlen(from):0) + (to?strlen(to):0) +
-            (subject?strlen(subject):0) + (body?strlen(body):0) + 256);
+            (subject?strlen(subject):0) + (body?strlen(body):0) +
+            strlen(date) + strlen(msgid) + 256);
         sprintf(hdr,
-            "From: %s\r\nTo: %s\r\nSubject: %s\r\n"
-            "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-            from?from:"", to?to:"", subject?subject:"", body?body:"");
+            "Date: %s\r\nFrom: %s\r\nTo: %s\r\nSubject: %s\r\n"
+            "Message-ID: %s\r\n"
+            "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n"
+            "Content-Transfer-Encoding: 8bit\r\n\r\n%s",
+            date, from?from:"", to?to:"", subject?subject:"", msgid,
+            body?body:"");
         SSL_write(ssl, hdr, (int)strlen(hdr));
         if (!amalgame_smtp_cmd(ssl, "\r\n.", '2')) goto cleanup;
         amalgame_smtp_cmd(ssl, "QUIT", '2');                    /* best-effort */

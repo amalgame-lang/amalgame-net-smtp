@@ -16,3 +16,6 @@ examples/amalgame.lock
 examples/amalgame.toml
 examples/send
 examples/send.local.am
+
+# Package n.a pas de lock (résidu de build local)
+/amalgame.lock

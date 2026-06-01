@@ -1,31 +1,28 @@
-# amalgame-net-smtp — minimal SMTP client (transactional mail).
-#
-# v0.1: outbound send over implicit TLS (SMTPS, port 465). Part of the
-# Amalgame.Net.* protocol family (cf. amalgame-net-http). The broader
-# mail slice (SMTP server/relay, IMAP, POP3) is roadmap — see
-# beyond-http.md.
 
 [package]
-name              = "amalgame-net-smtp"
-version           = "0.1.1"
-license           = "Apache-2.0"
-description       = "Minimal SMTP client — send transactional mail over implicit TLS (port 465). Header-only binding on OpenSSL."
+name = "amalgame-net-smtp"
+version = "0.1.1"
+license = "Apache-2.0"
+description = "Minimal SMTP client — send transactional mail over implicit TLS (port 465). Header-only binding on OpenSSL."
 required-amalgame = ">=0.8.58"
-schema-version    = 1
+schema-version = 1
 
 [stdlib]
-# Single header-only class — the SMTP conversation lives entirely in
-# the runtime header (OpenSSL socket). No .am facade needed.
-class     = "Smtp"
-header    = "runtime/Amalgame_Net_Smtp.h"
+class = "Smtp"
+header = "runtime/Amalgame_Net_Smtp.h"
 namespace = "Amalgame.Net.Smtp"
-# -lssl -lcrypto appended to the final link line (OpenSSL 3.x /
-# LibreSSL). Same as amalgame-tls.
-libs      = ["ssl", "crypto"]
+libs = ["ssl", "crypto"]
 
 [stdlib.functions]
-# Return types MUST match amc's lowering of the AM method signatures
-# (bool → code_bool, string → code_string) or consumers hit
-# "conflicting types" at gcc link time.
-Smtp_Send      = { returns = "code_bool" }
-Smtp_LastError = { returns = "code_string" }
+
+[stdlib.functions.Smtp_Send]
+returns = "code_bool"
+
+[stdlib.functions.Smtp_LastError]
+returns = "code_string"
+
+[dependencies]
+
+[dependencies.smtp]
+git = "github.com/amalgame-lang/amalgame-net-smtp"
+tag = "v0.1.0"
