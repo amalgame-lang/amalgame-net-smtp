@@ -6,3 +6,13 @@
 *.swp
 *~
 .DS_Store
+
+# Test consumer avec vraies creds — ne jamais committer
+examples/send.local.am
+
+# Build artifacts / local test residue under examples/
+examples/*.c
+examples/amalgame.lock
+examples/amalgame.toml
+examples/send
+examples/send.local.am
