@@ -68,19 +68,44 @@ public class Mail {
     public Mail Html(string body)    { this.HtmlBody = body; return this }
     public Mail Attach(string path)  { this.Files.Add(path); return this }
 
-    // Build the MIME message (headers + body) and hand it to SendRaw.
+    // Exact on-wire DATA payload that Send() would transmit: sanitized
+    // headers + body, dot-stuffed, but WITHOUT opening any connection.
+    // Useful for previewing a message and for security tests that assert
+    // no email-header injection slipped through.
+    public string Preview() {
+        return Mail.dotStuff(this.assemble())
+    }
+
+    // Build the MIME message and hand the dot-stuffed payload to SendRaw.
     public bool Send(string host, int port, string user, string pass) {
-        let domain: string = this.domainOf(this.FromAddr)
+        return Mail.sendRaw(host, port, user, pass,
+                            Mail.headerSafe(this.FromAddr),
+                            Mail.headerSafe(this.ToAddr),
+                            this.Preview())
+    }
+
+    // Assemble the full MIME message (sanitized headers + body +
+    // attachments). Shared by Preview() and Send(); no dot-stuffing here
+    // (Preview applies it) and no transmission.
+    private string assemble() {
+        // Derive the Message-ID domain from the SANITIZED From: otherwise a
+        // CRLF in FromAddr would re-enter the message through the
+        // Message-ID header (domainOf keeps everything after '@').
+        let domain: string = this.domainOf(Mail.headerSafe(this.FromAddr))
         let crlf:   string = "\r\n"
 
-        // Common top headers.
+        // Common top headers. Every attacker-reachable value (addresses
+        // from a contact form, subject) is passed through headerSafe so an
+        // embedded CR/LF cannot inject extra headers or a forged body
+        // (email header injection — RFC 5322 §2.2: a header field ends at
+        // the first CRLF).
         var msg: string = "Date: " + Mail.rfcDate() + crlf
-        msg = msg + "From: " + this.FromAddr + crlf
-        msg = msg + "To: " + this.ToAddr + crlf
+        msg = msg + "From: " + Mail.headerSafe(this.FromAddr) + crlf
+        msg = msg + "To: " + Mail.headerSafe(this.ToAddr) + crlf
         if (String_Length(this.ReplyAddr) > 0) {
-            msg = msg + "Reply-To: " + this.ReplyAddr + crlf
+            msg = msg + "Reply-To: " + Mail.headerSafe(this.ReplyAddr) + crlf
         }
-        msg = msg + "Subject: " + Mail.encodeHeader(this.Subj) + crlf
+        msg = msg + "Subject: " + Mail.encodeHeader(Mail.headerSafe(this.Subj)) + crlf
         msg = msg + "Message-ID: " + Mail.newMessageId(domain) + crlf
         msg = msg + "MIME-Version: 1.0" + crlf
 
@@ -95,9 +120,7 @@ public class Mail {
             // No attachments: the body part's headers go straight in the
             // top-level message (bodyPart already starts with its own
             // Content-Type when single, or a multipart header when alt).
-            msg = msg + bodyPart
-            return Mail.sendRaw(host, port, user, pass,
-                                this.FromAddr, this.ToAddr, msg)
+            return msg + bodyPart
         }
 
         // With attachments: wrap everything in multipart/mixed.
@@ -114,7 +137,10 @@ public class Mail {
         while (i < nFiles) {
             let path: string = this.Files.Get(i)
             let b64:  string = Mail.fileBase64(path)
-            let name: string = this.baseName(path)
+            // Sanitize the filename before it lands in quoted-string MIME
+            // params (name="…" / filename="…"): no CR/LF, no embedded
+            // quote/backslash that could break out of the quoting.
+            let name: string = Mail.headerParamSafe(this.baseName(path))
             msg = msg + "--" + mixed + crlf
             msg = msg + "Content-Type: application/octet-stream; name=\"" + name + "\"" + crlf
             msg = msg + "Content-Transfer-Encoding: base64" + crlf
@@ -123,9 +149,7 @@ public class Mail {
             i = i + 1
         }
         msg = msg + "--" + mixed + "--" + crlf
-
-        return Mail.sendRaw(host, port, user, pass,
-                            this.FromAddr, this.ToAddr, msg)
+        return msg
     }
 
     public static string LastError() {
@@ -168,6 +192,42 @@ public class Mail {
         var ok: bool = false
         @c { ok = Amalgame_Net_Smtp_SendRaw(host, port, user, pass, from, to, data); }
         return ok
+    }
+
+    // ── security helpers ──
+
+    // Neutralize email header injection: a header field value ends at the
+    // first CRLF (RFC 5322 §2.2), so anything an attacker puts after an
+    // embedded CR or LF would become new headers / a forged body. We cut
+    // the value at the first CR or LF, dropping the injected tail.
+    private static string headerSafe(string s) {
+        let r: int = String_IndexOf(s, "\r")
+        let n: int = String_IndexOf(s, "\n")
+        var cut: int = r
+        if (n >= 0) {
+            if (cut < 0 || n < cut) { cut = n }
+        }
+        if (cut < 0) { return s }
+        return String_Substring(s, 0, cut)
+    }
+
+    // Same as headerSafe, but for values that land inside a quoted-string
+    // MIME parameter (filename="…"): also strip the double-quote and
+    // backslash so the value can't break out of the quoting.
+    private static string headerParamSafe(string s) {
+        var v: string = Mail.headerSafe(s)
+        v = String_Replace(v, "\"", "")
+        v = String_Replace(v, "\\", "")
+        return v
+    }
+
+    // RFC 5321 §4.5.2 transparency: any DATA line beginning with "." must
+    // be doubled so it isn't mistaken for the end-of-DATA terminator that
+    // SendRaw appends. The message always starts with "Date: ", so there
+    // is no leading-dot first line to special-case — replacing every
+    // CRLF+"." covers all body/attachment lines.
+    private static string dotStuff(string msg) {
+        return String_Replace(msg, "\r\n.", "\r\n..")
     }
 
     // ── helpers ──
