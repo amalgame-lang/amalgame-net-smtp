@@ -1,0 +1,66 @@
+// examples/mail_security.am — security regression test for the Mail
+// builder. Feeds attacker-controlled values (as a contact form would)
+// containing embedded CRLF + header-injection / DATA-terminator payloads,
+// then asserts on Mail.Preview() — the exact on-wire DATA — that NONE of
+// the injected lines survive.
+//
+// Threat: a contact form passes visitor name/email/subject/message into
+// the mail. Without sanitization an embedded "\r\n" turns the rest of the
+// value into new headers (Bcc:, etc.) or a forged body (email header
+// injection), and a body line starting with "." can prematurely end the
+// SMTP DATA phase.
+
+import Amalgame.Net.Smtp
+import Amalgame.String
+
+public class Program {
+    public static void Main(string[] args) {
+        // Attacker payloads: each tries to inject a header via CRLF.
+        let wire: string = Mail.New()
+            .From("contact@example.com\r\nBcc: attacker@evil.test")
+            .To("client@example.com\r\nCc: victim2@evil.test")
+            .ReplyTo("visitor@example.com\r\nX-Injected: reply")
+            .Subject("Hello\r\nX-Injected: subject")
+            .Text("Body line\r\n.\r\nQUIT\r\ninjected after terminator")
+            .Preview()
+
+        var bad: int = 0
+
+        // 1) No injected header lines survived.
+        bad = bad + Program.must(!String_Contains(wire, "Bcc: attacker@evil.test"),
+                                 "From CRLF injection neutralized (no Bcc)")
+        bad = bad + Program.must(!String_Contains(wire, "Cc: victim2@evil.test"),
+                                 "To CRLF injection neutralized (no Cc)")
+        bad = bad + Program.must(!String_Contains(wire, "X-Injected: reply"),
+                                 "Reply-To CRLF injection neutralized")
+        bad = bad + Program.must(!String_Contains(wire, "X-Injected: subject"),
+                                 "Subject CRLF injection neutralized")
+
+        // 2) Legitimate headers still present (sanitization kept the head).
+        bad = bad + Program.must(String_Contains(wire, "From: contact@example.com\r\n"),
+                                 "legit From preserved")
+        bad = bad + Program.must(String_Contains(wire, "To: client@example.com\r\n"),
+                                 "legit To preserved")
+
+        // 3) DATA transparency: a body line that was ".\r\n" must be
+        //    dot-stuffed to "..\r\n" so it can't end the DATA phase.
+        bad = bad + Program.must(String_Contains(wire, "\r\n..\r\n"),
+                                 "body bare-dot line dot-stuffed")
+
+        if (bad == 0) {
+            Console.WriteLine("[PASS] mail security: no header injection")
+        } else {
+            Console.WriteLine("[FAIL] mail security: issues found")
+        }
+    }
+
+    // Print pass/fail for one assertion; return 0 if ok, 1 if it failed.
+    static int must(bool cond, string label) {
+        if (cond) {
+            Console.WriteLine("[PASS] " + label)
+            return 0
+        }
+        Console.WriteLine("[FAIL] " + label)
+        return 1
+    }
+}

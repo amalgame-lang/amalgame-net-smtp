@@ -78,5 +78,18 @@ echo "$DOUT"
 echo "$DOUT" | grep -q "\[PASS\]" || { echo "FAIL (Mail builder)"; exit 1; }
 echo "[PASS] builder Mail"
 
+# ── 3) security: email header injection + DATA dot-stuffing ────────
+echo ""
+echo "── security (header injection + dot-stuffing) ──"
+AMALGAME_PACKAGES_DIR="$SELF" "$AMC" examples/mail_security.am \
+    -o "$BUILD/sec" --external mail.am >/dev/null 2>&1
+gcc -O2 -Iruntime -I"$RT" -include runtime/Amalgame_Net_Smtp.h \
+    "$BUILD/sec.c" "$BUILD/mail.o" -lssl -lcrypto -lgc -lm -o "$BUILD/sec"
+SOUT="$("$BUILD/sec")"
+echo "$SOUT"
+echo "$SOUT" | grep -q "\[FAIL\]" && { echo "FAIL (security)"; exit 1; }
+echo "$SOUT" | grep -q "no header injection" || { echo "FAIL (security: missing pass)"; exit 1; }
+echo "[PASS] security"
+
 echo ""
 echo "All tests passed."
