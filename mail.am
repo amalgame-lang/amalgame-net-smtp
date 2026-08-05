@@ -1,4 +1,4 @@
-// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2).
+// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2.5).
 //
 // Assembles a full RFC 5322 / MIME message (plain text and/or HTML,
 // optional file attachments) and sends it via the transport core
@@ -13,6 +13,7 @@
 //       .Subject("Bonjour")
 //       .Html("<h1>Salut</h1><p>…</p>")        // and/or .Text("…")
 //       .Attach("/path/to/invoice.pdf")        // 0..N attachments
+//       .Bcc("archive@example.com")            // 0..N hidden recipients
 //       .Send("ssl0.ovh.net", 465, "user", "pass")
 //   if (!ok) { Console.WriteLine(Mail.LastError()) }
 //
@@ -38,6 +39,7 @@ public class Mail {
     public FromAddr:  string
     public ToAddr:    string
     public ReplyAddr: string
+    public BccAddrs:  List<string>
     public Subj:      string
     public TextBody:  string
     public HtmlBody:  string
@@ -47,6 +49,7 @@ public class Mail {
         this.FromAddr  = ""
         this.ToAddr    = ""
         this.ReplyAddr = ""
+        this.BccAddrs  = new List<string>()
         this.Subj      = ""
         this.TextBody  = ""
         this.HtmlBody  = ""
@@ -63,6 +66,11 @@ public class Mail {
     // addr-spec ("user@host") — no display-name (encoded-words aren't
     // allowed inside an address).
     public Mail ReplyTo(string addr) { this.ReplyAddr = addr; return this }
+    // Hidden copy: an extra envelope recipient (RCPT TO) that never
+    // appears in any header — unlike Cc, a Bcc address is invisible to
+    // every other recipient (RFC 5322 §3.6.3: Bcc field, if present at
+    // all, is stripped before transmission). Call once per address.
+    public Mail Bcc(string addr)     { this.BccAddrs.Add(addr); return this }
     public Mail Subject(string s)    { this.Subj     = s;    return this }
     public Mail Text(string body)    { this.TextBody = body; return this }
     public Mail Html(string body)    { this.HtmlBody = body; return this }
@@ -80,8 +88,21 @@ public class Mail {
     public bool Send(string host, int port, string user, string pass) {
         return Mail.sendRaw(host, port, user, pass,
                             Mail.headerSafe(this.FromAddr),
-                            Mail.headerSafe(this.ToAddr),
+                            this.envelopeTo(),
                             this.Preview())
+    }
+
+    // Envelope recipients for SendRaw's `to` parameter: the primary To
+    // address plus one line per Bcc address ('\n'-joined — see the doc
+    // comment on Amalgame_Net_Smtp_SendRaw). None of the Bcc addresses
+    // are ever written into a header, so they stay invisible to the
+    // primary recipient and to each other.
+    private string envelopeTo() {
+        var env: string = Mail.headerSafe(this.ToAddr)
+        for i in 0..this.BccAddrs.Count() {
+            env = env + "\n" + Mail.headerSafe(this.BccAddrs.Get(i))
+        }
+        return env
     }
 
     // Assemble the full MIME message (sanitized headers + body +

@@ -351,6 +351,14 @@ static inline code_string Amalgame_Net_Smtp_EncodeHeader(code_string s) {
  * blank line + body), CRLF line endings, and dot-stuffing if needed.
  * SendRaw appends the terminating CRLF "." itself.
  *
+ * `to` is the ENVELOPE recipient list, not a header: it never feeds the
+ * message headers (those come from `data`, built by the caller). It may
+ * contain multiple addresses separated by '\n' — one RCPT TO issued per
+ * non-empty entry. This is how Mail.Bcc() reaches an extra recipient
+ * without that address ever appearing in the message (true BCC): the
+ * caller appends bcc addresses to `to` but keeps the To: header built
+ * from the primary recipient only.
+ *
  * This is what the Mail builder (mail.am) targets. Smtp.Send below is a
  * convenience wrapper that assembles a plain-text message and calls it.
  *
@@ -421,8 +429,28 @@ static inline code_bool Amalgame_Net_Smtp_SendRaw(
         char line[1024];
         snprintf(line, sizeof(line), "MAIL FROM:<%s>", from ? from : "");
         if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
-        snprintf(line, sizeof(line), "RCPT TO:<%s>", to ? to : "");
-        if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
+
+        /* One RCPT TO per '\n'-separated envelope recipient (primary To
+         * plus any Bcc addresses appended by the caller — see the
+         * `to` doc comment above). */
+        {
+            const char* start = to ? to : "";
+            int done = 0;
+            while (!done) {
+                const char* nl = strchr(start, '\n');
+                size_t len = nl ? (size_t)(nl - start) : strlen(start);
+                if (len > 0) {
+                    char rcpt[600];
+                    if (len >= sizeof(rcpt)) len = sizeof(rcpt) - 1;
+                    memcpy(rcpt, start, len);
+                    rcpt[len] = 0;
+                    snprintf(line, sizeof(line), "RCPT TO:<%s>", rcpt);
+                    if (!amalgame_smtp_cmd(ssl, line, '2')) goto cleanup;
+                }
+                if (!nl) { done = 1; } else { start = nl + 1; }
+            }
+        }
+
         if (!amalgame_smtp_cmd(ssl, "DATA", '3')) goto cleanup;
 
         /* Caller-assembled message, then the terminating CRLF "." */
