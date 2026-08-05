@@ -14,6 +14,7 @@ public class Program {
             .Subject("Bonjour")
             .Text("Version texte de secours.")
             .Html("<h1>Salut</h1><p>Mail HTML depuis Amalgame.</p>")
+            .Bcc("archive@example.com")
             .Send("smtp.invalid.example", 465, "user", "pass")
 
         if (ok) {

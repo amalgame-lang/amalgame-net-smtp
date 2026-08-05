@@ -22,6 +22,7 @@ public class Program {
             .ReplyTo("visitor@example.com\r\nX-Injected: reply")
             .Subject("Hello\r\nX-Injected: subject")
             .Text("Body line\r\n.\r\nQUIT\r\ninjected after terminator")
+            .Bcc("hidden@example.com\r\nRCPT TO:<attacker@evil.test>")
             .Preview()
 
         var bad: int = 0
@@ -46,6 +47,14 @@ public class Program {
         //    dot-stuffed to "..\r\n" so it can't end the DATA phase.
         bad = bad + Program.must(String_Contains(wire, "\r\n..\r\n"),
                                  "body bare-dot line dot-stuffed")
+
+        // 4) Bcc is an envelope-only recipient: it must NEVER appear in the
+        //    message itself (headers or body) — that's the whole point of
+        //    a hidden copy, and Preview() is the exact on-wire message.
+        bad = bad + Program.must(!String_Contains(wire, "hidden@example.com"),
+                                 "Bcc address absent from the message")
+        bad = bad + Program.must(!String_Contains(wire, "RCPT TO:<attacker@evil.test>"),
+                                 "Bcc CRLF injection neutralized")
 
         if (bad == 0) {
             Console.WriteLine("[PASS] mail security: no header injection")

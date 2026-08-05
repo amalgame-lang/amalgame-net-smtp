@@ -82,6 +82,7 @@ public class Program {
             .Text("Version texte de secours.")            // optional
             .Html("<h1>Merci</h1><p>Facture en pièce jointe.</p>")
             .Attach("/path/to/invoice.pdf")               // 0..N attachments
+            .Bcc("archive@example.com")                   // 0..N hidden recipients
             .Send("ssl0.ovh.net", 465, "user", "pass")
 
         if (!ok) { Console.WriteLine(Mail.LastError()) }
@@ -104,13 +105,15 @@ The MIME shape is chosen automatically:
 | `.From(addr)` `.To(addr)` `.Subject(s)` | required envelope/headers |
 | `.Text(body)` `.Html(body)` | set either or both |
 | `.Attach(path)` | add a file (base64, `application/octet-stream`); call repeatedly |
+| `.Bcc(addr)` | add a hidden envelope recipient (never appears in any header); call repeatedly |
 | `.Send(host, port, user, pass)` | returns `bool`; `Mail.LastError()` on failure |
 
 ## Scope & limits
 
 - **Implicit TLS only** (port 465). Plaintext and STARTTLS (port 587)
   are not implemented yet.
-- **One recipient** per message (no CC/BCC yet).
+- **One visible recipient** (`To:`) plus any number of `.Bcc()` addresses.
+  No `Cc:` yet.
 - **`AUTH LOGIN`** only (base64 user/pass). No OAUTH2/XOAUTH2.
 - Attachments are read fully into memory + base64 (fine for typical
   document sizes; not meant for very large files).
