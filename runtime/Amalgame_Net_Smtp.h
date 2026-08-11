@@ -5,12 +5,24 @@
  * https://github.com/amalgame-lang/amalgame-net-smtp
  *
  * One AM class:
- *   Smtp — static send over implicit TLS (SMTPS, port 465).
+ *   Mail — builder + send, implicit TLS (SMTPS, port 465) or
+ *   STARTTLS submission (port 587), selected automatically from the
+ *   port passed to Send()/SendRaw().
  *
- * v0.1 scope: outbound transactional mail over implicit TLS only
- * (the ssl0.ovh.net:465 / Gmail:465 case). Plaintext + STARTTLS
- * (port 587) and inbound (IMAP/POP3) are out of scope — see the
- * amalgame ecosystem roadmap (beyond-http.md) for the broader
+ * v0.2.6: added STARTTLS (port 587) — cleartext greeting/EHLO/STARTTLS,
+ * then a TLS upgrade in place and a second EHLO per RFC 3207. Added
+ * process-wide SIGPIPE suppression (a peer closing the connection
+ * mid-write — rate-limiting, a reset — used to kill the whole process;
+ * it now just fails the send with a clean error). Both fixes came out
+ * of a real STARTTLS-only server (mail.nidclair.fr) crashing the caller:
+ * calling SSL_connect() immediately on a socket whose peer speaks
+ * cleartext first races the server's unprompted "220 ..." greeting
+ * against our TLS ClientHello, and OpenSSL's recovery from the
+ * resulting garbled handshake was not a clean failure.
+ *
+ * v0.1 scope was implicit TLS only (the ssl0.ovh.net:465 / Gmail:465
+ * case). Inbound (IMAP/POP3) is still out of scope — see the amalgame
+ * ecosystem roadmap (beyond-http.md) for the broader
  * Amalgame.Net.{Smtp server, Imap, Pop3} slice.
  *
  * Requires OpenSSL 3.x (or LibreSSL — drop-in ABI compatible):
@@ -36,6 +48,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
@@ -164,6 +177,63 @@ static inline int amalgame_smtp_cmd(SSL* ssl, const char* line, char expect) {
         SSL_write(ssl, "\r\n", 2);
     }
     return amalgame_smtp_expect(ssl, expect);
+}
+
+/* Plaintext twins of expect/cmd above, for the pre-STARTTLS phase (port
+ * 587): the greeting/EHLO/STARTTLS exchange happens in cleartext, BEFORE
+ * any SSL object exists. Calling SSL_connect() immediately on a socket
+ * whose peer is about to speak plaintext (as the implicit-TLS path did
+ * unconditionally) races the server's unprompted "220 ..." greeting
+ * against our TLS ClientHello — confirmed in practice against a real
+ * STARTTLS-only server: the peer's plaintext bytes land mid-handshake,
+ * OpenSSL misparses them as TLS framing, and recovery from that state
+ * crashed the process (SIGABRT) instead of failing the handshake
+ * cleanly. Identical line-reading logic to amalgame_smtp_expect, just
+ * over the raw fd via read()/write() instead of SSL_read/SSL_write. */
+static inline int amalgame_smtp_expect_plain(int fd, char expect) {
+    char line[1024];
+    int li = 0;
+    char first = 0;
+    int last_line = 0;
+    char full[2048];
+    int fi = 0;
+
+    while (!last_line) {
+        char ch;
+        int n = read(fd, &ch, 1);
+        if (n <= 0) {
+            g_amalgame_smtp_last_error = "SMTP: connection closed while reading reply (STARTTLS phase)";
+            return 0;
+        }
+        if (fi < (int)sizeof(full) - 1) full[fi++] = ch;
+        if (ch == '\r') continue;
+        if (ch == '\n') {
+            line[li] = 0;
+            if (li > 0) first = line[0];
+            if (li < 4 || line[3] != '-') last_line = 1;
+            li = 0;
+            continue;
+        }
+        if (li < (int)sizeof(line) - 1) line[li++] = ch;
+    }
+
+    full[fi] = 0;
+    if (first != expect) {
+        size_t len = strlen(full);
+        char* msg = (char*) GC_MALLOC_ATOMIC(len + 32);
+        snprintf(msg, len + 32, "SMTP rejected (STARTTLS phase): %s", full);
+        g_amalgame_smtp_last_error = msg;
+        return 0;
+    }
+    return 1;
+}
+
+static inline int amalgame_smtp_cmd_plain(int fd, const char* line, char expect) {
+    if (line && *line) {
+        if (write(fd, line, strlen(line)) < 0) { /* fallthrough to expect(), which will report closed */ }
+        if (write(fd, "\r\n", 2) < 0) { /* ditto */ }
+    }
+    return amalgame_smtp_expect_plain(fd, expect);
 }
 
 /* Extract the domain part of an email address ("a@b.com" → "b.com").
@@ -375,6 +445,15 @@ static inline code_bool Amalgame_Net_Smtp_SendRaw(
     g_amalgame_smtp_last_error = "";
     if (!host || !*host) { g_amalgame_smtp_last_error = "SMTP: empty host"; return 0; }
 
+    /* A write() to a socket the peer has already closed (rate-limiting,
+     * greylisting, a mid-conversation reset...) raises SIGPIPE, which
+     * kills the process by default in C — observed in practice on the
+     * plaintext STARTTLS leg above. Ignore it process-wide so the write
+     * just fails with EPIPE/-1 instead, letting the existing expect()/
+     * cmd() error paths handle it like any other closed connection. Safe
+     * to set unconditionally: a mail sender has no other use for SIGPIPE. */
+    signal(SIGPIPE, SIG_IGN);
+
     int sock = -1;
     SSL_CTX* ctx = NULL;
     SSL* ssl = NULL;
@@ -401,19 +480,59 @@ static inline code_bool Amalgame_Net_Smtp_SendRaw(
     freeaddrinfo(res);
     if (sock < 0) { g_amalgame_smtp_last_error = "SMTP: TCP connect failed"; return 0; }
 
-    /* TLS handshake (implicit — SMTPS). */
-    SSL_library_init();
-    ctx = SSL_CTX_new(TLS_client_method());
-    if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; goto cleanup; }
-    ssl = SSL_new(ctx);
-    if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; goto cleanup; }
-    SSL_set_fd(ssl, sock);
-    SSL_set_tlsext_host_name(ssl, host);
-    if (SSL_connect(ssl) != 1) { g_amalgame_smtp_last_error = "SMTP: TLS handshake failed"; goto cleanup; }
+    /* Port 587 = submission, STARTTLS (RFC 3207): the connection starts
+     * in cleartext, and TLS is negotiated via an explicit command —
+     * different wire protocol from implicit TLS (465/SMTPS), not just a
+     * different port number. Any port other than 587 keeps the original
+     * v0.1 implicit-TLS behavior verbatim (in particular 465, the
+     * ssl0.ovh.net/Gmail case this library already ships in production
+     * for) — this branch adds a capability, it does not touch that path.
+     */
+    if (port == 587) {
+        if (!amalgame_smtp_expect_plain(sock, '2')) goto cleanup;      /* server greeting, cleartext */
+        {
+            char ehlo[300];
+            snprintf(ehlo, sizeof(ehlo), "EHLO %s", domain);
+            if (!amalgame_smtp_cmd_plain(sock, ehlo, '2')) goto cleanup;
+        }
+        if (!amalgame_smtp_cmd_plain(sock, "STARTTLS", '2')) goto cleanup;
 
-    /* SMTP conversation. */
-    if (!amalgame_smtp_expect(ssl, '2')) goto cleanup;          /* server greeting */
-    {
+        SSL_library_init();
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; goto cleanup; }
+        ssl = SSL_new(ctx);
+        if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; goto cleanup; }
+        SSL_set_fd(ssl, sock);
+        SSL_set_tlsext_host_name(ssl, host);
+        if (SSL_connect(ssl) != 1) { g_amalgame_smtp_last_error = "SMTP: TLS handshake failed (STARTTLS)"; goto cleanup; }
+
+        /* RFC 3207: re-issue EHLO over the now-encrypted channel — the
+         * pre-TLS capability list is untrusted (a MITM could have altered
+         * it), and servers commonly only advertise AUTH post-TLS anyway
+         * (confirmed in practice: AUTH PLAIN/LOGIN appeared only on the
+         * second EHLO against mail.nidclair.fr). */
+        {
+            char ehlo2[300];
+            snprintf(ehlo2, sizeof(ehlo2), "EHLO %s", domain);
+            if (!amalgame_smtp_cmd(ssl, ehlo2, '2')) goto cleanup;
+        }
+    } else {
+        /* TLS handshake (implicit — SMTPS). Unchanged from v0.1. */
+        SSL_library_init();
+        ctx = SSL_CTX_new(TLS_client_method());
+        if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; goto cleanup; }
+        ssl = SSL_new(ctx);
+        if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; goto cleanup; }
+        SSL_set_fd(ssl, sock);
+        SSL_set_tlsext_host_name(ssl, host);
+        if (SSL_connect(ssl) != 1) { g_amalgame_smtp_last_error = "SMTP: TLS handshake failed"; goto cleanup; }
+    }
+
+    /* SMTP conversation. Greeting + first EHLO already done for port 587
+     * (cleartext, then re-issued over TLS right after STARTTLS above) —
+     * only the implicit-TLS path still needs them here. */
+    if (port != 587) {
+        if (!amalgame_smtp_expect(ssl, '2')) goto cleanup;          /* server greeting */
         char ehlo[300];
         snprintf(ehlo, sizeof(ehlo), "EHLO %s", domain);
         if (!amalgame_smtp_cmd(ssl, ehlo, '2')) goto cleanup;

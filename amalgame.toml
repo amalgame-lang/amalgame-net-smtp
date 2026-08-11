@@ -1,16 +1,17 @@
 # amalgame-net-smtp — SMTP client (transactional mail).
 #
-# v0.2: outbound send over implicit TLS (SMTPS, port 465). Plain Smtp
-# helpers (runtime header) + a fluent Mail builder (facade, mail.am) for
-# HTML bodies and file attachments. Part of the Amalgame.Net.* family
-# (cf. amalgame-net-http). SMTP server/relay + IMAP/POP3 are roadmap —
-# see beyond-http.md.
+# v0.2: outbound send over implicit TLS (SMTPS, port 465) or STARTTLS
+# submission (port 587, since v0.2.6). Plain Smtp helpers (runtime
+# header) + a fluent Mail builder (facade, mail.am) for HTML bodies and
+# file attachments. Part of the Amalgame.Net.* family (cf.
+# amalgame-net-http). SMTP server/relay + IMAP/POP3 are roadmap — see
+# beyond-http.md.
 
 [package]
 name              = "amalgame-net-smtp"
-version           = "0.2.5"
+version           = "0.2.6"
 license           = "Apache-2.0"
-description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (port 465). OpenSSL transport + a fluent Mail builder."
+description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (465) or STARTTLS (587), auto-selected by port. OpenSSL transport + a fluent Mail builder."
 required-amalgame = ">=0.8.58"
 schema-version    = 1
 
