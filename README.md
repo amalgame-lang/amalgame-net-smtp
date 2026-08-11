@@ -110,8 +110,9 @@ The MIME shape is chosen automatically:
 
 ## Scope & limits
 
-- **Implicit TLS only** (port 465). Plaintext and STARTTLS (port 587)
-  are not implemented yet.
+- **Implicit TLS (port 465) or STARTTLS submission (port 587)** —
+  selected automatically from the port passed to `.Send()`/`SendRaw()`.
+  Plaintext-only (no TLS at all) is still not implemented.
 - **One visible recipient** (`To:`) plus any number of `.Bcc()` addresses.
   No `Cc:` yet.
 - **`AUTH LOGIN`** only (base64 user/pass). No OAUTH2/XOAUTH2.
