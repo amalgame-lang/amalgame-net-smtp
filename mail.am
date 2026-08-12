@@ -1,4 +1,4 @@
-// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2.5).
+// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2.7).
 //
 // Assembles a full RFC 5322 / MIME message (plain text and/or HTML,
 // optional file attachments) and sends it via the transport core
@@ -9,6 +9,7 @@
 //   import Amalgame.Net.Smtp
 //   let ok: bool = Mail.New()
 //       .From("contact@example.com")
+//       .FromDisplay("Acme Inc")               // optional — From: header only
 //       .To("client@example.com")
 //       .Subject("Bonjour")
 //       .Html("<h1>Salut</h1><p>…</p>")        // and/or .Text("…")
@@ -37,6 +38,7 @@ import Amalgame.String
 
 public class Mail {
     public FromAddr:  string
+    public FromName:  string
     public ToAddr:    string
     public ReplyAddr: string
     public BccAddrs:  List<string>
@@ -47,6 +49,7 @@ public class Mail {
 
     public Mail() {
         this.FromAddr  = ""
+        this.FromName  = ""
         this.ToAddr    = ""
         this.ReplyAddr = ""
         this.BccAddrs  = new List<string>()
@@ -58,7 +61,16 @@ public class Mail {
 
     public static Mail New() { return new Mail() }
 
+    // Bare addr-spec ("user@host") — this is also the SMTP envelope
+    // sender (MAIL FROM), so it must stay address-only. For a display
+    // name in the From: header, use .FromDisplay() instead of stuffing
+    // "Name <addr>" in here: MAIL FROM:<Name <addr>> is invalid syntax
+    // and most servers reject the whole transaction.
     public Mail From(string addr)    { this.FromAddr = addr; return this }
+    // Optional display name shown in the From: header only ("Name
+    // <addr>") — never touches the envelope sender. Non-ASCII is RFC
+    // 2047-encoded automatically (same as Subject).
+    public Mail FromDisplay(string name) { this.FromName = name; return this }
     public Mail To(string addr)      { this.ToAddr   = addr; return this }
     // Reply-To: where replies should go (e.g. a contact form's visitor
     // address). From must stay the authenticated account so SPF/DKIM
@@ -92,6 +104,16 @@ public class Mail {
                             this.Preview())
     }
 
+    // From: header value — "Name <addr>" when a display name was set via
+    // .FromDisplay(), otherwise the bare address. Kept separate from the
+    // envelope sender (Send() always passes FromAddr alone to SendRaw):
+    // MAIL FROM's addr-spec cannot carry a display name.
+    private string fromHeaderValue() {
+        let addr: string = Mail.headerSafe(this.FromAddr)
+        if (String_Length(this.FromName) == 0) { return addr }
+        return Mail.encodeHeader(Mail.headerSafe(this.FromName)) + " <" + addr + ">"
+    }
+
     // Envelope recipients for SendRaw's `to` parameter: the primary To
     // address plus one line per Bcc address ('\n'-joined — see the doc
     // comment on Amalgame_Net_Smtp_SendRaw). None of the Bcc addresses
@@ -121,7 +143,7 @@ public class Mail {
         // (email header injection — RFC 5322 §2.2: a header field ends at
         // the first CRLF).
         var msg: string = "Date: " + Mail.rfcDate() + crlf
-        msg = msg + "From: " + Mail.headerSafe(this.FromAddr) + crlf
+        msg = msg + "From: " + this.fromHeaderValue() + crlf
         msg = msg + "To: " + Mail.headerSafe(this.ToAddr) + crlf
         if (String_Length(this.ReplyAddr) > 0) {
             msg = msg + "Reply-To: " + Mail.headerSafe(this.ReplyAddr) + crlf
