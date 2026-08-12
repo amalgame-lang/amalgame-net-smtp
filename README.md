@@ -77,6 +77,7 @@ public class Program {
     public static void Main(string[] args) {
         let ok: bool = Mail.New()
             .From("contact@example.com")
+            .FromDisplay("Acme Inc")                      // optional, From: header only
             .To("client@example.com")
             .Subject("Votre facture")
             .Text("Version texte de secours.")            // optional
@@ -103,6 +104,7 @@ The MIME shape is chosen automatically:
 |----------------|-------|
 | `Mail.New()` | start a message |
 | `.From(addr)` `.To(addr)` `.Subject(s)` | required envelope/headers |
+| `.FromDisplay(name)` | optional display name for From: header only — never the envelope sender |
 | `.Text(body)` `.Html(body)` | set either or both |
 | `.Attach(path)` | add a file (base64, `application/octet-stream`); call repeatedly |
 | `.Bcc(addr)` | add a hidden envelope recipient (never appears in any header); call repeatedly |

@@ -6,10 +6,14 @@
 # file attachments. Part of the Amalgame.Net.* family (cf.
 # amalgame-net-http). SMTP server/relay + IMAP/POP3 are roadmap — see
 # beyond-http.md.
+#
+# v0.2.7: Mail.FromDisplay() — display name for the From: header, kept
+# separate from the envelope sender (.From() alone), which must stay a
+# bare addr-spec for MAIL FROM to be valid SMTP syntax.
 
 [package]
 name              = "amalgame-net-smtp"
-version           = "0.2.6"
+version           = "0.2.7"
 license           = "Apache-2.0"
 description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (465) or STARTTLS (587), auto-selected by port. OpenSSL transport + a fluent Mail builder."
 required-amalgame = ">=0.8.58"

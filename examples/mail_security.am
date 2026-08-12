@@ -56,6 +56,32 @@ public class Program {
         bad = bad + Program.must(!String_Contains(wire, "RCPT TO:<attacker@evil.test>"),
                                  "Bcc CRLF injection neutralized")
 
+        // 5) FromDisplay(): legit case renders "Name <addr>" in the From:
+        //    header (the envelope sender used by Send() stays FromAddr
+        //    alone — not exercised by Preview(), which never opens a
+        //    connection, but guaranteed by inspection: Send() always
+        //    passes headerSafe(FromAddr) to SendRaw, never fromHeaderValue()).
+        let wireNamed: string = Mail.New()
+            .From("contact@example.com")
+            .FromDisplay("Acme Inc")
+            .To("client@example.com")
+            .Subject("Hello")
+            .Text("Body")
+            .Preview()
+        bad = bad + Program.must(String_Contains(wireNamed, "From: Acme Inc <contact@example.com>\r\n"),
+                                 "FromDisplay renders Name <addr>")
+
+        // 6) FromDisplay() is header-injection safe like every other field.
+        let wireNamedAttack: string = Mail.New()
+            .From("contact@example.com")
+            .FromDisplay("Acme\r\nBcc: attacker@evil.test")
+            .To("client@example.com")
+            .Subject("Hello")
+            .Text("Body")
+            .Preview()
+        bad = bad + Program.must(!String_Contains(wireNamedAttack, "Bcc: attacker@evil.test"),
+                                 "FromDisplay CRLF injection neutralized")
+
         if (bad == 0) {
             Console.WriteLine("[PASS] mail security: no header injection")
         } else {
