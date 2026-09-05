@@ -142,13 +142,16 @@ public class Mail {
         // embedded CR/LF cannot inject extra headers or a forged body
         // (email header injection — RFC 5322 §2.2: a header field ends at
         // the first CRLF).
-        var msg: string = "Date: " + Mail.rfcDate() + crlf
-        msg = msg + "From: " + this.fromHeaderValue() + crlf
+        // Header order matters to some relays: OVH (ssl0.ovh.net) silently discards a message whose FIRST
+        // header line is "Date:" (accepted with 250 queued, never delivered — bisected 2026-09-05: the same
+        // headers with From: first are delivered). Emit the classic From / To / Subject / Date order.
+        var msg: string = "From: " + this.fromHeaderValue() + crlf
         msg = msg + "To: " + Mail.headerSafe(this.ToAddr) + crlf
         if (String_Length(this.ReplyAddr) > 0) {
             msg = msg + "Reply-To: " + Mail.headerSafe(this.ReplyAddr) + crlf
         }
         msg = msg + "Subject: " + Mail.encodeHeader(Mail.headerSafe(this.Subj)) + crlf
+        msg = msg + "Date: " + Mail.rfcDate() + crlf
         msg = msg + "Message-ID: " + Mail.newMessageId(domain) + crlf
         msg = msg + "MIME-Version: 1.0" + crlf
 
@@ -266,7 +269,7 @@ public class Mail {
 
     // RFC 5321 §4.5.2 transparency: any DATA line beginning with "." must
     // be doubled so it isn't mistaken for the end-of-DATA terminator that
-    // SendRaw appends. The message always starts with "Date: ", so there
+    // SendRaw appends. The message always starts with "From: ", so there
     // is no leading-dot first line to special-case — replacing every
     // CRLF+"." covers all body/attachment lines.
     private static string dotStuff(string msg) {
