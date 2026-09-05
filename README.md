@@ -13,6 +13,12 @@ Two APIs:
 - **`Mail.New()....Send(...)`** — a fluent builder for HTML bodies,
   text+HTML alternatives, and file attachments (v0.2).
 
+## v0.2.8 (2026-09-05)
+
+Bodies are CRLF-normalised before DATA: a bare LF in a text/HTML body (the natural `\n` callers write)
+made Postfix-based relays such as OVH accept the message (`250 queued`) then drop it silently — nothing was
+delivered, not even to the sender's own mailbox. `Preview()` shows the exact bytes now sent.
+
 ## Install
 
 ```bash

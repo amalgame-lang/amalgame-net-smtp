@@ -278,31 +278,41 @@ public class Mail {
     // The content part: a single text/plain or text/html, or a
     // multipart/alternative when both are present. Returns headers +
     // blank line + body (no trailing boundary — the caller wraps).
+    // RFC 5321 §2.3.8: every line of DATA ends with CRLF — a bare LF inside a body is a protocol violation
+    // that modern MTAs treat as SMTP-smuggling (Postfix ≥ 3.9 smtpd_forbid_bare_newline): the message is
+    // accepted ("250 queued") then silently dropped. Seen 2026-09-05 with OVH (ssl0.ovh.net): nothing was
+    // delivered, not even to the sender's own mailbox, until bodies were normalised. Callers naturally write
+    // "\n" in text bodies, so normalise here: collapse any existing CRLF first (no doubling), then LF → CRLF.
+    private static string crlfNormalize(string body) {
+        return String_Replace(String_Replace(body, "\r\n", "\n"), "\n", "\r\n")
+    }
     private string buildBodyPart(bool hasText, bool hasHtml, string crlf) {
+        let text: string = Mail.crlfNormalize(this.TextBody)
+        let html: string = Mail.crlfNormalize(this.HtmlBody)
         if (hasText && hasHtml) {
             let alt: string = "ALT_amalgame_boundary_4f8d2"
             var p: string = "Content-Type: multipart/alternative; boundary=\"" + alt + "\"" + crlf + crlf
             p = p + "--" + alt + crlf
             p = p + "Content-Type: text/plain; charset=UTF-8" + crlf
             p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-            p = p + this.TextBody + crlf + crlf
+            p = p + text + crlf + crlf
             p = p + "--" + alt + crlf
             p = p + "Content-Type: text/html; charset=UTF-8" + crlf
             p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-            p = p + this.HtmlBody + crlf + crlf
+            p = p + html + crlf + crlf
             p = p + "--" + alt + "--" + crlf
             return p
         }
         if (hasHtml) {
             var p: string = "Content-Type: text/html; charset=UTF-8" + crlf
             p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-            p = p + this.HtmlBody
+            p = p + html
             return p
         }
         // Default: plain text (also covers the empty-body case).
         var p: string = "Content-Type: text/plain; charset=UTF-8" + crlf
         p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-        p = p + this.TextBody
+        p = p + text
         return p
     }
 
