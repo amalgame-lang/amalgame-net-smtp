@@ -13,6 +13,11 @@ Two APIs:
 - **`Mail.New()....Send(...)`** — a fluent builder for HTML bodies,
   text+HTML alternatives, and file attachments (v0.2).
 
+## v0.2.9 (2026-09-05)
+
+Headers are emitted From / To / Subject / Date / Message-ID: OVH silently discarded every message whose first
+header was `Date:` (bisected against a delivered twin; same headers reordered were delivered).
+
 ## v0.2.8 (2026-09-05)
 
 Bodies are CRLF-normalised before DATA: a bare LF in a text/HTML body (the natural `\n` callers write)
