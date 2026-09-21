@@ -1,0 +1,27 @@
+// examples/mail_encoding.am — prints the on-wire DATA of two mails for tests/run_tests.sh, which decodes
+// them with Python's email package: every line ≤ 76 chars, bodies round-trip byte for byte, Message-IDs
+// differ. The HTML is one 3 KB line with accents, '=', trailing spaces and a lone "." line — the shapes
+// that broke the 998-byte limit and landed in spam as 8bit (2026-09-21).
+
+import Amalgame.Net.Smtp
+import Amalgame.String
+
+public class Program {
+    public static void Main(string[] args) {
+        var html: string = "<p style=\"color:#333\">Bonjour Grégoire, « Balbutiements » — café = 3 €</p>"
+        var i: int = 0
+        while (i < 40) { html = html + "<span style=\"letter-spacing:.5px\">é" + String_FromInt(i) + "</span>"; i = i + 1 }
+        let text: string = "Ligne avec espace final \nTab final\t\n.\nfin=ok"
+        let a: string = Mail.New().From("noreply@example.com").FromDisplay("MusiCall").To("x@example.com")
+            .Subject("Encodage").Text(text).Html(html).Preview()
+        let b: string = Mail.New().From("noreply@example.com").To("y@example.com")
+            .Subject("Encodage").Text(text).Preview()
+        Console.WriteLine("===HTML===")
+        Console.WriteLine(html)
+        Console.WriteLine("===A===")
+        Console.WriteLine(a)
+        Console.WriteLine("===B===")
+        Console.WriteLine(b)
+        Console.WriteLine("===END===")
+    }
+}

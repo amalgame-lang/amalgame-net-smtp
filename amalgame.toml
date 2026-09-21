@@ -10,10 +10,14 @@
 # v0.2.7: Mail.FromDisplay() — display name for the From: header, kept
 # separate from the envelope sender (.From() alone), which must stay a
 # bare addr-spec for MAIL FROM to be valid SMTP syntax.
+#
+# v0.2.10: text/HTML bodies go out quoted-printable (lines ≤ 76) instead
+# of 8bit — a one-line HTML body broke the 998-byte line limit and landed
+# in spam. Message-ID made unique per call (was one per second per pid).
 
 [package]
 name              = "amalgame-net-smtp"
-version           = "0.2.9"
+version           = "0.2.10"
 license           = "Apache-2.0"
 description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (465) or STARTTLS (587), auto-selected by port. OpenSSL transport + a fluent Mail builder."
 required-amalgame = ">=0.8.58"
