@@ -1,4 +1,4 @@
-// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2.7).
+// mail.am — fluent Mail builder for amalgame-net-smtp (v0.2.10).
 //
 // Assembles a full RFC 5322 / MIME message (plain text and/or HTML,
 // optional file attachments) and sends it via the transport core
@@ -220,6 +220,11 @@ public class Mail {
         @c { r = (code_string) Amalgame_Net_Smtp_NewMessageId(domain); }
         return r
     }
+    private static string quotedPrintable(string body) {
+        var r: string = ""
+        @c { r = (code_string) Amalgame_Net_Smtp_QuotedPrintable(body); }
+        return r
+    }
     private static string fileBase64(string path) {
         var r: string = ""
         @c { r = (code_string) Amalgame_Net_Smtp_FileBase64(path); }
@@ -290,31 +295,36 @@ public class Mail {
         return String_Replace(String_Replace(body, "\r\n", "\n"), "\n", "\r\n")
     }
     private string buildBodyPart(bool hasText, bool hasHtml, string crlf) {
-        let text: string = Mail.crlfNormalize(this.TextBody)
-        let html: string = Mail.crlfNormalize(this.HtmlBody)
+        // quoted-printable, not 8bit: an HTML body is usually ONE long line, and a line over 998 bytes breaks
+        // RFC 5322 — the relay folds it by force (OVH did, mid-CSS-property) and spam filters score it
+        // (2026-09-21: invitations landed in Gmail spam). QP keeps every line ≤ 76 chars and 7-bit clean.
+        let text: string = Mail.quotedPrintable(Mail.crlfNormalize(this.TextBody))
+        let html: string = Mail.quotedPrintable(Mail.crlfNormalize(this.HtmlBody))
         if (hasText && hasHtml) {
             let alt: string = "ALT_amalgame_boundary_4f8d2"
             var p: string = "Content-Type: multipart/alternative; boundary=\"" + alt + "\"" + crlf + crlf
             p = p + "--" + alt + crlf
             p = p + "Content-Type: text/plain; charset=UTF-8" + crlf
-            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-            p = p + text + crlf + crlf
+            p = p + "Content-Transfer-Encoding: quoted-printable" + crlf + crlf
+            // One CRLF only: the CRLF before "--boundary" belongs to the boundary (RFC 2046 §5.1.1), a second
+            // one became a stray blank line at the end of each decoded part.
+            p = p + text + crlf
             p = p + "--" + alt + crlf
             p = p + "Content-Type: text/html; charset=UTF-8" + crlf
-            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
-            p = p + html + crlf + crlf
+            p = p + "Content-Transfer-Encoding: quoted-printable" + crlf + crlf
+            p = p + html + crlf
             p = p + "--" + alt + "--" + crlf
             return p
         }
         if (hasHtml) {
             var p: string = "Content-Type: text/html; charset=UTF-8" + crlf
-            p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+            p = p + "Content-Transfer-Encoding: quoted-printable" + crlf + crlf
             p = p + html
             return p
         }
         // Default: plain text (also covers the empty-body case).
         var p: string = "Content-Type: text/plain; charset=UTF-8" + crlf
-        p = p + "Content-Transfer-Encoding: 8bit" + crlf + crlf
+        p = p + "Content-Transfer-Encoding: quoted-printable" + crlf + crlf
         p = p + text
         return p
     }

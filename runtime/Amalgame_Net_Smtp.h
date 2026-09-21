@@ -115,11 +115,56 @@ static inline code_string Amalgame_Net_Smtp_RfcDate(void) {
  * AM: public static string NewMessageId(string domain)
  */
 static inline code_string Amalgame_Net_Smtp_NewMessageId(code_string domain) {
+    /* epoch.pid alone repeats for every message a process sends within the same second (a group
+     * invitation to N people went out as N mails with ONE Message-ID — 2026-09-21). Add the
+     * nanoseconds and a per-process counter so each call is unique. */
+    static unsigned long seq = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    seq++;
     char* buf = (char*) GC_MALLOC_ATOMIC(400);
-    snprintf(buf, 400, "<%lld.%d@%s>",
-             (long long) time(NULL), (int) getpid(),
+    snprintf(buf, 400, "<%lld.%09ld.%d.%lu@%s>",
+             (long long) ts.tv_sec, (long) ts.tv_nsec, (int) getpid(), seq,
              (domain && *domain) ? domain : "localhost");
     return (code_string) buf;
+}
+
+/*
+ * Smtp.QuotedPrintable — RFC 2045 §6.7 encoding of a text/HTML body.
+ * The input must already use CRLF line ends (Mail normalises them first):
+ * each CRLF stays a hard line break, every other line is cut with soft
+ * breaks ("=" CRLF) so no encoded line exceeds 76 characters.
+ *
+ * Why: sent as 8bit, a one-line HTML body of 2.5 KB broke RFC 5322's
+ * 998-byte line limit; OVH's relay folded it by force in the middle of a
+ * CSS property and spam filters score such lines (2026-09-21, Gmail spam).
+ *
+ * AM: public static string QuotedPrintable(string body)
+ */
+static inline code_string Amalgame_Net_Smtp_QuotedPrintable(code_string body) {
+    static const char hex[] = "0123456789ABCDEF";
+    const unsigned char* in = (const unsigned char*) (body ? body : "");
+    size_t n = strlen((const char*) in);
+    /* Worst case: every byte escaped (3x) plus a soft break every 25 escapes. */
+    char* out = (char*) GC_MALLOC_ATOMIC(n * 3 + (n / 25 + 1) * 3 + 1);
+    size_t j = 0, col = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = in[i];
+        if (c == '\r' && i + 1 < n && in[i + 1] == '\n') {
+            out[j++] = '\r'; out[j++] = '\n'; col = 0; i++;
+            continue;
+        }
+        /* Whitespace just before a line end (or at the very end) would be stripped in transit. */
+        int endOfLine = (i + 1 == n) || (in[i + 1] == '\r' && i + 2 < n && in[i + 2] == '\n');
+        int literal = (c >= 33 && c <= 126 && c != '=') || ((c == ' ' || c == '\t') && !endOfLine);
+        size_t w = literal ? 1 : 3;
+        if (col + w > 75) { out[j++] = '='; out[j++] = '\r'; out[j++] = '\n'; col = 0; }
+        if (literal) { out[j++] = (char) c; }
+        else { out[j++] = '='; out[j++] = hex[c >> 4]; out[j++] = hex[c & 15]; }
+        col += w;
+    }
+    out[j] = 0;
+    return (code_string) out;
 }
 
 #if AMALGAME_SMTP_HAVE_SSL

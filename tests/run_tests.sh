@@ -91,5 +91,41 @@ echo "$SOUT" | grep -q "\[FAIL\]" && { echo "FAIL (security)"; exit 1; }
 echo "$SOUT" | grep -q "no header injection" || { echo "FAIL (security: missing pass)"; exit 1; }
 echo "[PASS] security"
 
+# ── 4) encodage des corps (quoted-printable) + Message-ID unique ───
+echo ""
+echo "── encodage (quoted-printable, lignes ≤ 76, Message-ID unique) ──"
+AMALGAME_PACKAGES_DIR="$SELF" "$AMC" examples/mail_encoding.am \
+    -o "$BUILD/enc" --external mail.am >/dev/null 2>&1
+gcc -O2 -Iruntime -I"$RT" -include runtime/Amalgame_Net_Smtp.h \
+    "$BUILD/enc.c" "$BUILD/mail.o" -lssl -lcrypto -lgc -lm -o "$BUILD/enc"
+"$BUILD/enc" > "$BUILD/enc.out"
+python3 - "$BUILD/enc.out" <<'PY' || { echo "FAIL (encodage)"; exit 1; }
+import sys, email, email.policy
+raw = open(sys.argv[1], encoding="utf-8", newline="").read()   # garder les CRLF tels quels
+html = raw.split("===HTML===\n")[1].split("\n===A===")[0]
+a = raw.split("===A===\n")[1].split("\n===B===")[0]
+b = raw.split("===B===\n")[1].split("\n===END===")[0]
+text = "Ligne avec espace final \r\nTab final\t\r\n.\r\nfin=ok"
+bad = 0
+def must(c, label):
+    global bad
+    print(("[PASS] " if c else "[FAIL] ") + label); bad += 0 if c else 1
+for name, w in (("A", a), ("B", b)):
+    lines = w.split("\r\n")
+    must(max(len(l.encode()) for l in lines) <= 76, name + " : aucune ligne > 76 octets (max %d)" % max(len(l.encode()) for l in lines))
+    must(all(ord(ch) < 128 for ch in w), name + " : message 7 bits")
+    must("8bit" not in w, name + " : plus de 8bit")
+def undot(w): return w.replace("\r\n..", "\r\n.")
+ma = email.message_from_bytes(undot(a).encode(), policy=email.policy.default)
+mb = email.message_from_bytes(undot(b).encode(), policy=email.policy.default)
+parts = {p.get_content_type(): p for p in ma.walk()}
+must(parts["text/html"].get_payload(decode=True).decode("utf-8") == html, "HTML décodé identique (3 Ko, accents, =)")
+must(parts["text/plain"].get_payload(decode=True).decode("utf-8") == text, "texte décodé identique (espace/tab finals, ligne '.')")
+must(mb.get_payload(decode=True).decode("utf-8") == text, "texte seul décodé identique")
+must(ma["Message-ID"] != mb["Message-ID"], "Message-ID différents (%s / %s)" % (ma["Message-ID"], mb["Message-ID"]))
+sys.exit(1 if bad else 0)
+PY
+echo "[PASS] encodage"
+
 echo ""
 echo "All tests passed."
