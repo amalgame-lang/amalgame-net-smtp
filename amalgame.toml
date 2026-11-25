@@ -17,9 +17,9 @@
 
 [package]
 name              = "amalgame-net-smtp"
-version           = "0.2.10"
+version           = "0.2.11"
 license           = "Apache-2.0"
-description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (465) or STARTTLS (587), auto-selected by port. OpenSSL transport + a fluent Mail builder."
+description       = "SMTP client — send transactional mail (text/HTML + attachments) over implicit TLS (465) or STARTTLS (587), auto-selected by port ; the relay certificate is verified (chain + host name, since v0.2.11 — before, none was checked and the password could be read by anyone standing in for the relay). OpenSSL transport + a fluent Mail builder."
 required-amalgame = ">=0.8.58"
 schema-version    = 1
 

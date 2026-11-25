@@ -83,6 +83,61 @@
 /* Last error string for the most recent Smtp.Send on this thread. */
 static __thread const char* g_amalgame_smtp_last_error = "";
 
+#if AMALGAME_SMTP_HAVE_SSL
+#include <openssl/x509v3.h>
+/* v0.2.11 — the TLS session to the SMTP server, VERIFIED.
+ * Until v0.2.10 the SSL_CTX was created without SSL_CTX_set_verify :
+ * OpenSSL's default for a client is SSL_VERIFY_NONE, so ANY certificate
+ * was accepted — self-signed, expired, issued for another name. Anyone on
+ * the path could stand in for the relay and read the AUTH LOGIN exchange
+ * (user and password, base64) and every message. Now : the chain must
+ * reach a CA of the system store (or SSL_CERT_FILE / SSL_CERT_DIR, for a
+ * private relay), and the certificate must be issued for `host` (DNS
+ * name, no partial wildcards ; an IP literal against the IP SAN). The
+ * handshake is started again when a signal interrupts it (GC stop-the-
+ * world signals). Returns the SSL, or NULL with the last error set. */
+static inline SSL* amalgame_smtp_tls_open(int sock, const char* host, SSL_CTX** ctxOut, const char* what) {
+    SSL_library_init();
+    SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
+    *ctxOut = ctx;
+    if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; return NULL; }
+    SSL_CTX_set_default_verify_paths(ctx);
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+    SSL* ssl = SSL_new(ctx);
+    if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; return NULL; }
+    SSL_set_fd(ssl, sock);
+    unsigned char ipbuf[16];
+    int pinned;
+    if (inet_pton(AF_INET, host, ipbuf) == 1 || inet_pton(AF_INET6, host, ipbuf) == 1) {
+        pinned = X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), host) == 1;
+    } else {
+        SSL_set_tlsext_host_name(ssl, host);
+        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        pinned = SSL_set1_host(ssl, host) == 1;
+    }
+    if (!pinned) { g_amalgame_smtp_last_error = "SMTP: cannot check the server name"; SSL_free(ssl); return NULL; }
+    for (int tries = 0; tries < 20; tries++) {
+        errno = 0;
+        int r = SSL_connect(ssl);
+        if (r == 1) return ssl;
+        int e = SSL_get_error(ssl, r);
+        if ((e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE || e == SSL_ERROR_SYSCALL) && errno == EINTR) continue;
+        break;
+    }
+    long v = SSL_get_verify_result(ssl);
+    static __thread char msg[256];
+    if (v != X509_V_OK) {
+        snprintf(msg, sizeof(msg), "SMTP: TLS handshake failed%s : certificate of %s not trusted (%s)",
+                 what, host, X509_verify_cert_error_string(v));
+    } else {
+        snprintf(msg, sizeof(msg), "SMTP: TLS handshake failed%s", what);
+    }
+    g_amalgame_smtp_last_error = msg;
+    SSL_free(ssl);
+    return NULL;
+}
+#endif
+
 static inline code_string Amalgame_Net_Smtp_LastError(void) {
     return (code_string) g_amalgame_smtp_last_error;
 }
@@ -542,14 +597,8 @@ static inline code_bool Amalgame_Net_Smtp_SendRaw(
         }
         if (!amalgame_smtp_cmd_plain(sock, "STARTTLS", '2')) goto cleanup;
 
-        SSL_library_init();
-        ctx = SSL_CTX_new(TLS_client_method());
-        if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; goto cleanup; }
-        ssl = SSL_new(ctx);
-        if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; goto cleanup; }
-        SSL_set_fd(ssl, sock);
-        SSL_set_tlsext_host_name(ssl, host);
-        if (SSL_connect(ssl) != 1) { g_amalgame_smtp_last_error = "SMTP: TLS handshake failed (STARTTLS)"; goto cleanup; }
+        ssl = amalgame_smtp_tls_open(sock, host, &ctx, " (STARTTLS)");   /* v0.2.11 : verified */
+        if (!ssl) goto cleanup;
 
         /* RFC 3207: re-issue EHLO over the now-encrypted channel — the
          * pre-TLS capability list is untrusted (a MITM could have altered
@@ -563,14 +612,8 @@ static inline code_bool Amalgame_Net_Smtp_SendRaw(
         }
     } else {
         /* TLS handshake (implicit — SMTPS). Unchanged from v0.1. */
-        SSL_library_init();
-        ctx = SSL_CTX_new(TLS_client_method());
-        if (!ctx) { g_amalgame_smtp_last_error = "SMTP: SSL_CTX_new failed"; goto cleanup; }
-        ssl = SSL_new(ctx);
-        if (!ssl) { g_amalgame_smtp_last_error = "SMTP: SSL_new failed"; goto cleanup; }
-        SSL_set_fd(ssl, sock);
-        SSL_set_tlsext_host_name(ssl, host);
-        if (SSL_connect(ssl) != 1) { g_amalgame_smtp_last_error = "SMTP: TLS handshake failed"; goto cleanup; }
+        ssl = amalgame_smtp_tls_open(sock, host, &ctx, "");   /* v0.2.11 : verified */
+        if (!ssl) goto cleanup;
     }
 
     /* SMTP conversation. Greeting + first EHLO already done for port 587
