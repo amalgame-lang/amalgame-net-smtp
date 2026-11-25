@@ -126,6 +126,15 @@ The MIME shape is chosen automatically:
 - **Implicit TLS (port 465) or STARTTLS submission (port 587)** —
   selected automatically from the port passed to `.Send()`/`SendRaw()`.
   Plaintext-only (no TLS at all) is still not implemented.
+- **The relay's certificate is verified** (since v0.2.11): its chain must
+  reach a CA of the system store and it must be issued for the host passed
+  to `.Send()` (an IP host is checked against the certificate's IP SAN).
+  Otherwise nothing is sent, not even the user name, and `LastError()`
+  says why (`certificate of <host> not trusted (hostname mismatch)`, ...).
+  A relay with a certificate from a private CA: point OpenSSL at that CA
+  with `SSL_CERT_FILE=/path/ca.pem` (or `SSL_CERT_DIR`) — never turn the
+  check off. Before v0.2.11 no certificate was checked at all: anyone on
+  the path could stand in for the relay and read the password.
 - **One visible recipient** (`To:`) plus any number of `.Bcc()` addresses.
   No `Cc:` yet.
 - **`AUTH LOGIN`** only (base64 user/pass). No OAUTH2/XOAUTH2.

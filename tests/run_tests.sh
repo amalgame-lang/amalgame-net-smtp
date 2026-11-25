@@ -127,5 +127,11 @@ sys.exit(1 if bad else 0)
 PY
 echo "[PASS] encodage"
 
+# ── 5) TLS : le certificat du relais est vérifié (v0.2.11) ─────────
+echo ""
+echo "── TLS : certificat du relais vérifié ──"
+AMC_RUNTIME="$RT" bash tests/tls_verify_test.sh || { echo "FAIL (TLS verify)"; exit 1; }
+echo "[PASS] TLS verify"
+
 echo ""
 echo "All tests passed."
